@@ -1,0 +1,7 @@
+-c requirements.txt
+flake8
+pytest
+pytest-cov
+pre-commit
+pip-tools
+black
