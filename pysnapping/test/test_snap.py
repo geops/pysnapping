@@ -3,15 +3,13 @@ from functools import partial
 import pytest
 from shapely.geometry import LineString, MultiPoint
 import numpy as np
-from numpy.testing import assert_allclose, assert_equal
+from numpy.testing import assert_allclose
 
 from pysnapping.shapes import (
     split_shape,
     split_ls_coords,
     GeomWithDists,
-    shape_dists_trusted_at,
     get_geodesic_line_string_dists,
-    simplify_rdp_2d_keep_z,
 )
 from pysnapping.linear_referencing import snap_points_in_order, SnappingError
 
@@ -121,20 +119,6 @@ def test_split_ls_large_many():
         [ls_coords[-1], ls_coords[-1]],
     ]
     compare_split_result(result, expected)
-
-
-@pytest.mark.parametrize(
-    "ls_trusted,expected",
-    [("1111", "011111110"), ("0000", "0" * 9), ("0011", "000001110")],
-)
-def test_shape_dists_trusted_at(ls_trusted, expected):
-    ls_trusted = [c == "1" for c in ls_trusted]
-    expected = [c == "1" for c in expected]
-    ls_dists = [-10, 1, 3, 11]
-    dists = [-10.1, -10, 0, 1, 2, 3, 5, 11, 12]
-    shape = GeomWithDists(None, ls_dists, ls_trusted, None, None)
-    result = shape_dists_trusted_at(shape, dists)
-    assert np.all(result == expected)
 
 
 def test_split_shape_all_trusted(simple_ls):
@@ -335,10 +319,3 @@ def test_snap(straight_ls, straight_ls_dists, mp, d_mp, atol, expected):
         assert not reverse
         # result should be converged to about 1 meter
         assert_allclose(result, expected, rtol=0, atol=1.1)
-
-
-def test_simplify():
-    coords = [[1, 2, float("nan")], [2.99, 3.99, 1000], [3, 4, 5]]
-    simple_coords = simplify_rdp_2d_keep_z(coords, tolerance=0.1)
-    # assert_equal to be able to compare with NaNs
-    assert_equal(simple_coords, np.array(coords)[[0, 2]])
