@@ -64,7 +64,8 @@ def fix_dists(dists, get_alternative_measurements):
     The `alternative_measurements` help to fill gaps (this can be e.g. calculated distances
     for GTFS shapes.txt or travel times without waiting times for GTFS stop_times.txt).
     A locally affine linear dependency between `dists` and `alternative_measurements`
-    is assumed for filling gaps.
+    is assumed for filling gaps. `alternative_measurements` can contain NaNs but where
+    it is finite, it has to be strictly increasing.
 
     Return `(fixed_dists, original_dists_mask, n_finite)`.
     `original_dists_mask` is a boolean mask indicating where original
