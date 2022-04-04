@@ -1,0 +1,56 @@
+image: registry.geops.de/build/buster-python:latest
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+  XDG_CACHE_HOME: "$CI_PROJECT_DIR/.cache/"
+  LC_ALL: "C.UTF-8"
+  LANG: "C.UTF-8"
+
+before_script:
+  - eval $(ssh-agent -s)
+  - mkdir -p ~/.ssh
+  - echo -e "Host *\nStrictHostKeyChecking no\n\n" > ~/.ssh/config
+  - echo "$GITLAB_PIPELINES_KEY" | tr -d '\r' | ssh-add - > /dev/null
+  - python3 -m venv venv
+  - source venv/bin/activate
+  - python3 --version
+  - pip install --upgrade pip wheel setuptools
+
+stages:
+  - build
+  - test
+
+cache:
+  paths:
+    - .pip-cache/
+
+build_wheels:
+  stage: build
+  script:
+    - pip wheel -w wheels -r requirements.txt
+    - pip wheel --no-index --find-links=wheels -w wheels .
+    - pip wheel --find-links=wheels -w dev-wheels -r dev-requirements.txt
+  artifacts:
+    when: on_success
+    paths:
+      - wheels/
+      - dev-wheels/
+
+run_tests:
+  stage: test
+  needs:
+    - build_wheels
+  script:
+    - pip install --no-index --no-deps wheels/*
+    - pip install --no-index --find-links=dev-wheels pytest pytest-cov
+    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-config=setup.cfg pysnapping
+
+run_pre_commit_checks:
+  stage: test
+  needs:
+    - build_wheels
+  script:
+    - pip install --no-index --no-deps dev-wheels/*
+    - pre-commit run -c .pre-commit-config.yaml --all-files
+  except:
+    - master
