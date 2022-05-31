@@ -187,6 +187,8 @@ def split_shape(
     converge_meters=1,
     max_move_trusted_meters=15,
     try_reverse: bool = True,
+    res_rtol: float = 3.0,
+    res_atol: float = 200.0,
 ) -> typing.List[LineString]:
     """Split WGS84 shape at points
 
@@ -212,6 +214,10 @@ def split_shape(
     converge_meters -- stop iterative solution when geodesic dists along line string do not
                        move more than this
     max_move_trusted_meters -- tolerance for altered trusted point dists to still count as trusted
+    res_rtol/res_atol -- Relative/absolute tolerance for residuum. Default means that a snapped stop
+                         may be 3 times as far away from the original stop than the closest point on
+                         the shape plus 200 meters.
+                         If this is not the case, SnappingError is raised.
     """
 
     try_reverse = try_reverse and points.n_finite == 0
@@ -247,6 +253,8 @@ def split_shape(
             min_dist_meters=min_dist_meters,
             try_reverse=try_reverse,
             converge_meters=converge_meters,
+            res_rtol=res_rtol,
+            res_atol=res_atol,
         )
 
     # there is no stop at the start/end of the first/last part -> slice away
@@ -270,9 +278,9 @@ def estimate_missing_point_dists(
     minimizing the sum of squares of deviations to the input data.
     If dists change too much during this process, they are marked as untrusted.
 
-    If at least two point distances are known and `travel_seconds` is given and
-    finite and non-negative everywhere, `travel_seconds` is used to estimate missing
-    point distances. Otherwise, missing point distances are filled equidistantly.
+    If `travel_seconds` is given and finite and non-negative everywhere
+    and not vanishing everywhere, `travel_seconds` is used to estimate missing point distances.
+    Otherwise, missing point distances are filled equidistantly.
     All estimated point distances are marked as untrusted.
 
     `geom` attribute is not copied.
@@ -309,7 +317,22 @@ def estimate_missing_point_dists(
     finite_point_dists = dists[finite_point_indices]
     missing_indices = np.nonzero(np.logical_not(points.finite_dists_mask))[0]
 
-    use_travel_seconds = travel_seconds is not None and points.n_finite >= 2
+    # If the first/last point have unknown dist, we make the assumption that they
+    # lie at the start/end of the shape. This does not have to be true but it is the
+    # most sensible estimate we can make.
+    # The iterative solution will correct this later if it is wrong.
+    known_point_indices = []
+    known_point_dists = []
+    if not points.finite_dists_mask[0]:
+        known_point_indices.append(0)
+        known_point_dists.append(shape.dists[0])
+    known_point_indices.extend(finite_point_indices)
+    known_point_dists.extend(finite_point_dists)
+    if not points.finite_dists_mask[-1]:
+        known_point_indices.append(n_points - 1)
+        known_point_dists.append(shape.dists[-1])
+
+    use_travel_seconds = travel_seconds is not None
     if use_travel_seconds:
         travel_seconds_arr = np.asarray(travel_seconds, dtype=float)
         # We tolerate zero travel times since this often occurs due to rounding to full minutes.
@@ -317,8 +340,10 @@ def estimate_missing_point_dists(
         # If any travel time is however missing or negative, we assume all travel times are garbage,
         # falling back to equidistant interpolation since there is no obvious way
         # to fix negative / missing travel times.
-        use_travel_seconds = np.all(
-            np.isfinite(travel_seconds_arr) & (travel_seconds_arr >= 0)
+        use_travel_seconds = (
+            np.all(np.isfinite(travel_seconds_arr))
+            and np.all(travel_seconds_arr >= 0)
+            and not np.all(travel_seconds == 0)
         )
         if use_travel_seconds:
             travel_times = np.empty_like(dists)
@@ -326,28 +351,15 @@ def estimate_missing_point_dists(
             travel_times[1:] = np.cumsum(travel_seconds_arr)
 
             # We have to eliminate duplicate consecutive travel times for the interpolation to work.
-            # Afterwards, we have to check again that at least two known values exist.
-            x = travel_times[finite_point_indices]
+            x = travel_times[known_point_indices]
             x, indices = np.unique(x, return_index=True)
-            use_travel_seconds = len(x) >= 2
-
-            if use_travel_seconds:
-                y = finite_point_dists[indices]
-                x_prime = travel_times[missing_indices]
+            assert len(x) >= 2
+            y = np.array(known_point_dists, dtype=float)[indices]
+            x_prime = travel_times[missing_indices]
 
     if not use_travel_seconds:
-        # fill missing point distances equidistantly between known distances
-        # (estimated distances are used as initial conditions to the iterative solution)
-        x = []
-        y = []
-        if not points.finite_dists_mask[0]:
-            x.append(0)
-            y.append(shape.dists[0])
-        x.extend(finite_point_indices)
-        y.extend(finite_point_dists)
-        if not points.finite_dists_mask[-1]:
-            x.append(n_points - 1)
-            y.append(shape.dists[-1])
+        x = known_point_indices
+        y = known_point_dists
         x_prime = missing_indices
 
     dists[missing_indices] = interp1d(
@@ -364,7 +376,10 @@ def estimate_missing_point_dists(
         # dists estimated from travel times could be too close together or too close to known dists
         # so we fix this here for every group of consecutive missing distances
         for _, group in itertools.groupby(
-            enumerate(missing_indices), lambda c, i: c - i
+            enumerate(missing_indices),
+            # this function is constant as long as indices increase with step 1, thus giving
+            # us groups of consecutive indices
+            lambda t: t[0] - t[1],
         ):
             # the available space might be just enough, so we lower our standard a bit
             # to hopefully not get into trouble with floating point inaccuracies
@@ -405,6 +420,8 @@ def split_parts(
     min_dist_meters,
     try_reverse,
     converge_meters,
+    res_rtol,
+    res_atol,
 ):
     if len(parts) > 1 and try_reverse:
         raise ValueError("try_reverse only works for a single part")
@@ -435,6 +452,8 @@ def split_parts(
                 end_occupied=part is not parts[-1],
                 try_reverse=try_reverse,
                 convergence_accuracy=converge_meters,
+                res_rtol=res_rtol,
+                res_atol=res_atol,
             )
             if reverse:
                 sub_parts = split_ls_coords(part, ls_dists, split_dists[::-1])
