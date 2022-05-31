@@ -38,7 +38,7 @@ def straight_ls():
 @pytest.fixture
 def straight_ls_dists():
     # not the real geodesic dists, but simplified for testing
-    return [0, 1000]
+    return np.array([0, 1000], dtype=float)
 
 
 def compare_split_result(result, expected):
@@ -227,6 +227,137 @@ def test_split_shape_wrong_order_one_untrusted(simple_ls):
         min_dist
     ), "maximally close"
     assert ls.coords[0][0] < ls.coords[-1][0], "correct order"
+
+
+def test_split_shape_messed_up_trusted_dists(straight_ls, straight_ls_dists):
+    shape = GeomWithDists(
+        straight_ls,
+        straight_ls_dists,
+        np.ones(2, dtype=bool),
+        np.ones(2, dtype=bool),
+        2,
+    )
+    points = GeomWithDists(
+        MultiPoint([[1e-3, -1e-5], [2e-3, 1e-5], [4e-3, 2e-6], [5e-3, 0]]),
+        # * -10 is out of bounds, should be moved to 0 and still count as trusted
+        # * 500 and 490 are too close together and not increasing, they should end up
+        #   symmetrically around 495 with equidistant minimal spacing and count as untrusted
+        #   (they move 17.5 meters and only 15 meters will be allowed)
+        # * 1200 is out of bounds, should be moved to 1000 and marked as untrusted
+        np.array([-10, 500, 490, 1200]),
+        np.ones(4, dtype=bool),
+        np.ones(4, dtype=bool),
+        4,
+    )
+    line_strings = split_shape(
+        shape, points, min_dist_meters=25, max_move_trusted_meters=15
+    )
+    assert len(line_strings) == 3
+    assert_allclose(
+        np.array(line_strings[0].coords),
+        np.array([[0, 0], [2e-3, 0]]),
+        atol=1e-7,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[1].coords),
+        np.array([[2e-3, 0], [4e-3, 0]]),
+        atol=1e-7,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[2].coords),
+        np.array([[4e-3, 0], [5e-3, 0]]),
+        atol=1e-7,
+        rtol=0,
+    )
+
+
+def test_split_shape_fill_missing_dists():
+    # Simply projecting the points results in the wrong order.
+    #
+    # x----<-----x
+    # 3   1    2 |
+    #            ^
+    #            |
+    # x---->-----x
+    # 0
+
+    ls = LineString([[0, 0], [1e-2, 0], [1e-2, 1e-3], [0, 1e-3]])
+    shape = GeomWithDists(
+        ls,
+        np.array([0, 1000, 1100, 2100], dtype=float),
+        np.ones(4, dtype=bool),
+        np.ones(4, dtype=bool),
+        4,
+    )
+    points = GeomWithDists(
+        MultiPoint([[0, -1e-5], [1e-3, 8e-4], [7e-3, 8e-4], [0, 9e-4]]),
+        np.array([None] * 4, dtype=float),
+        np.zeros(4, dtype=bool),
+        np.zeros(4, dtype=bool),
+        0,
+    )
+
+    # If we don't pass travel times as a hint, dists are filled
+    # equidistantly spanning the whole shape.
+    # This should put 1 on the lower branch and 2 on the upper branch.
+    line_strings = split_shape(shape, points, try_reverse=False)
+    assert len(line_strings) == 3
+    assert_allclose(
+        np.array(line_strings[0].coords),
+        np.array([[0, 0], [1e-3, 0]]),
+        atol=1e-7,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[1].coords),
+        np.array([[1e-3, 0], [1e-2, 0], [1e-2, 1e-3], [7e-3, 1e-3]]),
+        atol=1e-7,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[2].coords),
+        np.array([[7e-3, 1e-3], [0, 1e-3]]),
+        atol=1e-7,
+        rtol=0,
+    )
+
+    # Now we pass travel times indicating that both 1 and 2 should
+    # be on the upper branch.
+    travel_seconds = [7 * 60, 0, 3 * 60]
+    line_strings = split_shape(
+        shape,
+        points,
+        travel_seconds,
+        try_reverse=False,
+        # tolerate snapped stop ending up far away from original stop
+        res_atol=1000,
+    )
+    assert len(line_strings) == 3
+
+    # from output and this makes sense
+    x1_expected = 0.00641
+    x2_expected = 0.006186
+
+    assert_allclose(
+        np.array(line_strings[0].coords),
+        np.array([[0, 0], [1e-2, 0], [1e-2, 1e-3], [x1_expected, 1e-3]]),
+        atol=1e-6,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[1].coords),
+        np.array([[x1_expected, 1e-3], [x2_expected, 1e-3]]),
+        atol=1e-6,
+        rtol=0,
+    )
+    assert_allclose(
+        np.array(line_strings[2].coords),
+        np.array([[x2_expected, 1e-3], [0, 1e-3]]),
+        atol=1e-6,
+        rtol=0,
+    )
 
 
 _many_d = [0, 25, 80] + list(np.arange(400, 700, 25)) + [900, 998]
