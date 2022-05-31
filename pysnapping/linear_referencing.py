@@ -7,6 +7,8 @@ import numpy as np
 from scipy.interpolate import interp1d
 from shapely.geometry import LineString, MultiPoint
 
+from .ordering import order_ok
+
 # pyproj < 2 has no way to create geod from crs
 # EPSG4326_GEOD = pyproj.CRS.from_epsg(4326).get_geod()
 EPSG4326_GEOD = pyproj.Geod(ellps="WGS84")
@@ -237,9 +239,7 @@ def snap_points_in_order(
 
     start_dist = ls_dists[0] + start_occupied * min_dist
     end_dist = ls_dists[-1] - end_occupied * min_dist
-    d_ok = partial(
-        dists_ok, min_dist=min_dist, start_dist=start_dist, end_dist=end_dist
-    )
+    d_ok = partial(order_ok, v_min=start_dist, v_max=end_dist, d_min=min_dist)
     available_length = end_dist - start_dist
     needed_length = (n_points - 1) * min_dist
     if available_length < needed_length:
@@ -307,16 +307,15 @@ def _best_snap_points_in_order(
     res_rtol,
     res_atol,
 ):
-    d_ok = partial(
-        dists_ok, min_dist=min_dist, start_dist=start_dist, end_dist=end_dist
-    )
+    d_ok = partial(order_ok, v_min=start_dist, v_max=end_dist, d_min=min_dist)
+    if not d_ok(initial_mp_dists):
+        raise ValueError(
+            f"initial mp dists are bad: start_dist={start_dist} "
+            f"min_dist={min_dist} end_dist={end_dist} "
+            f"first={initial_mp_dists[0]} min_diff={np.diff(initial_mp_dists).min()} "
+            f"last={initial_mp_dists[-1]}"
+        )
     optimal_residua = get_metric_residua(line_string, multi_point, cartesian_mp_dists)
-    initial_mp_dists = sanitize_initial_mp_dists(
-        initial_mp_dists=initial_mp_dists,
-        min_dist=min_dist,
-        start_dist=start_dist,
-        end_dist=end_dist,
-    )
     mp_dists, residuum = _snap_points_in_order(
         line_string=line_string,
         ls_dists=ls_dists,
@@ -345,7 +344,7 @@ def _best_snap_points_in_order(
             min_dist=min_dist,
         )
         if alt_residuum < residuum:
-            # we reverse later after dists_ok check
+            # we reverse later after order_ok check
             reverse = True
             mp_dists = alt
 
@@ -496,71 +495,8 @@ def _snap_points_in_order(
     return mp_dists, residuum
 
 
-def dists_ok(dists, min_dist, start_dist, end_dist):
-    # allow some numerical noise
-    return not len(dists) or (
-        dists[0] >= 0.999 * start_dist
-        and dists[-1] <= 1.001 * end_dist
-        and np.all(np.diff(dists) >= 0.999 * min_dist)
-    )
-
-
 def _get_residuum(line_string, multi_point, cartesian_mp_dists):
     return max(
         line_string.interpolate(d).distance(p)
         for d, p in zip(cartesian_mp_dists, multi_point.geoms)
     )
-
-
-def sanitize_initial_mp_dists(initial_mp_dists, min_dist, start_dist, end_dist):
-    n_points = len(initial_mp_dists)
-    available_length = end_dist - start_dist
-
-    initial_mp_dists = np.array(initial_mp_dists, dtype=float)
-    initial_nan = np.isnan(initial_mp_dists)
-    nan_indices = np.nonzero(initial_nan)[0]
-    if len(nan_indices):
-        initial_not_nan = np.logical_not(initial_nan)
-        given_indices = np.nonzero(initial_not_nan)[0]
-        given_values = initial_mp_dists[initial_not_nan]
-        if not len(given_indices) or given_indices[0] != 0:
-            new_given_indices = [0]
-            new_given_indices.extend(given_indices)
-            given_indices = new_given_indices
-            new_given_values = [start_dist]
-            new_given_values.extend(given_values)
-            given_values = new_given_values
-        if given_indices[-1] != n_points - 1:
-            if not isinstance(given_indices, list):
-                given_indices = list(given_indices)
-                given_values = list(given_values)
-            given_indices.append(n_points - 1)
-            given_values.append(end_dist)
-
-        # check implementation, not data
-        assert len(given_indices) >= 2
-        assert len(given_values) == len(given_indices)
-
-        initial_mp_dists[nan_indices] = interp1d(
-            x=given_indices, y=given_values, kind="linear", assume_sorted=True
-        )(nan_indices)
-
-    # check if given initial values are valid
-    if not dists_ok(
-        initial_mp_dists, min_dist=min_dist, start_dist=start_dist, end_dist=end_dist
-    ):
-        if len(nan_indices) < n_points:
-            logger.debug("discarding user defined bad initial mp dists")
-            if n_points == 1:
-                initial_mp_dists[0] = start_dist + available_length / 2
-            else:
-                initial_mp_dists = np.linspace(start_dist, end_dist, n_points)
-        else:
-            raise AssertionError(
-                f"calculated initial mp dists are bad: start_dist={start_dist} "
-                f"min_dist={min_dist} end_dist={end_dist} "
-                f"first={initial_mp_dists[0]} min_diff={np.diff(initial_mp_dists).min()} "
-                f"last={initial_mp_dists[-1]}"
-            )
-
-    return initial_mp_dists

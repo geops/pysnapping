@@ -229,33 +229,6 @@ def test_split_shape_wrong_order_one_untrusted(simple_ls):
     assert ls.coords[0][0] < ls.coords[-1][0], "correct order"
 
 
-def test_split_shape_only_one_good_dist_on_shape(simple_ls):
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([None, None, 1000, None], dtype=float),
-        np.array([False, False, True, False]),
-        np.array([False, False, True, False]),
-        1,
-    )
-    # coords for second shall not matter
-    mp = MultiPoint([[1e-4, 5e-4], [-5, -5]])
-    points = GeomWithDists(
-        mp,
-        np.array([None, 1000], dtype=float),
-        np.array([False, True]),
-        np.array([False, True]),
-        1,
-    )
-    min_dist = 25
-    line_strings = split_shape(shape, points, min_dist_meters=min_dist)
-    assert len(line_strings) == 1
-    ls = line_strings[0]
-    assert_allclose(
-        np.array(ls.coords),
-        np.array([[1e-4, 0], [1e-3, 0], [1e-3, 2e-3]]),
-    )
-
-
 _many_d = [0, 25, 80] + list(np.arange(400, 700, 25)) + [900, 998]
 
 
@@ -264,49 +237,50 @@ _many_d = [0, 25, 80] + list(np.arange(400, 700, 25)) + [900, 998]
     [
         # degenerate case
         (MultiPoint([]), [], None, []),
-        # one point without dist hint
-        (MultiPoint([[2.1e-3, 1e-4]]), [None], None, [210]),
-        # two points without dist hint
-        (MultiPoint([[5e-3, 1e-4], [6e-3, -1e-4]]), [None] * 2, None, [500, 600]),
-        # two points with snapped coords in wrong order without dist hint
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [None] * 2, None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with dist hints
+        # one point
+        (MultiPoint([[2.1e-3, 1e-4]]), [500], None, [210]),
+        # two points
+        (MultiPoint([[5e-3, 1e-4], [6e-3, -1e-4]]), [620, 650], None, [500, 600]),
+        # two points with snapped coords in wrong order
+        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [100, 900], None, [700 - 25, 700]),
+        # two points with snapped coords in wrong order with better dist hints
         # (same result, but should converge faster)
         (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [650, 690], None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with a single dist hint
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [None, 710], None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with bogus dist hint
-        # (dist hints shall be ignored in this case)
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [800, 700], None, [700 - 25, 700]),
-        # many unevenly spaced points without dist hint (will it converge?)
+        # many unevenly spaced points without equidistant dist hint (will it converge?)
         (
             MultiPoint([[d * 1e-5, 1e-4] for d in _many_d]),
-            [None] * len(_many_d),
+            np.linspace(0, 1000, len(_many_d)),
             None,
             _many_d,
         ),
         # exactly as many points as we can fit, all with the same coords
-        # optimization should terminate with the computed initial equidistant dists
+        # optimization should terminate with the initial equidistant dists
         # but we need to increase atol, so the solution is accepted (this is
         # bad data that should not occur in reality)
         (
             MultiPoint([[0, 0] for _ in range(41)]),
-            [None] * 41,
+            np.linspace(0, 1000, 41),
             1200,
             np.linspace(0, 1000, 41),
         ),
         # same as above but with default atol shall give an error
         (
             MultiPoint([[0, 0] for _ in range(41)]),
-            [None] * 41,
+            np.linspace(0, 1000, 41),
             None,
             SnappingError,
         ),
         # too many points
-        (MultiPoint([[0, 0] for _ in range(42)]), [None] * 42, None, SnappingError),
+        (
+            MultiPoint([[0, 0] for _ in range(42)]),
+            np.linspace(0, 1000, 42),
+            None,
+            SnappingError,
+        ),
     ],
 )
 def test_snap(straight_ls, straight_ls_dists, mp, d_mp, atol, expected):
+    d_mp = np.asarray(d_mp, dtype=float)
     if atol is not None:
         atol_snap = partial(snap, res_atol=atol)
     else:
