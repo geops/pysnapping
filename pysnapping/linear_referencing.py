@@ -466,7 +466,7 @@ def _snap_points_in_order(
         # avoid decreasing split_dists due to numerical noise
         # fixme: this is somehow ugly, better calculate intervals and clip those
         diffs = np.clip(np.diff(split_dists), 0, None)
-        split_dists[1:] = np.cumsum(diffs)
+        split_dists[1:] = np.cumsum(diffs) + split_dists[0]
         np.clip(split_dists, start_dist, end_dist, out=split_dists)
 
         logger.debug(
