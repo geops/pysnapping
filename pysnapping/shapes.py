@@ -16,7 +16,7 @@ from .linear_referencing import (
     SnappingError,
     EPSG4326_GEOD,
 )
-from .ordering import fix_sequence, fix_sequence_with_missing_values, NoSolution
+from .ordering import fix_sequence_with_missing_values, NoSolution
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ def convert_to_geodesic_dists(
 def split_shape(
     shape: GeomWithDists,
     points: GeomWithDists,
-    travel_seconds: typing.Optional[ArrayLike] = None,
+    travel_times: typing.Optional[ArrayLike] = None,
     min_dist_meters=25,
     converge_meters=1,
     max_move_trusted_meters=15,
@@ -229,7 +229,7 @@ def split_shape(
     shape, points = convert_to_geodesic_dists(shape, points)
     assert shape.n_finite == len(shape.dists)
 
-    points = estimate_missing_point_dists(shape, points, travel_seconds)
+    points = estimate_missing_point_dists(shape, points, travel_times)
     assert points.n_finite == n_points
 
     # first step: split at trusted dists
@@ -261,10 +261,52 @@ def split_shape(
     return [LineString(p[:, :2]) for p in itertools.islice(parts, 1, len(parts) - 1)]
 
 
+def _get_estimator(
+    x: np.ndarray, y: np.ndarray
+) -> typing.Callable[[ArrayLike], ArrayLike]:
+    # We have to eliminate duplicate consecutive values for the interpolation to work.
+    x, indices = np.unique(x, return_index=True)
+    if len(x) < 2:
+        raise ValueError("too few unique values")
+    y = y[indices]
+    return interp1d(
+        x,
+        y,
+        kind="linear",
+        copy=False,
+        bounds_error=False,
+        fill_value="extrapolate",
+        assume_sorted=True,
+    )
+
+
+def _fix_travel_time_dists(mask, dists, d_min, d_max, min_dist_meters):
+    n_points = len(dists)
+    indices = np.nonzero(mask)[0]
+    # every group of consecutive indices is an isolated problem
+    for _, group in itertools.groupby(
+        enumerate(indices),
+        # this function is constant as long as indices increase with step 1, thus giving
+        # us groups of consecutive indices
+        lambda t: t[0] - t[1],
+    ):
+        group_indices = [item[1] for item in group]
+        i_left = group_indices[0] - 1
+        i_right = group_indices[-1] + 1
+        v_min = dists[i_left] + min_dist_meters if i_left >= 0 else d_min
+        v_max = dists[i_right] - min_dist_meters if i_right < n_points else d_max
+        dists[group_indices] = fix_sequence_with_missing_values(
+            values=dists[group_indices],
+            v_min=v_min,
+            v_max=v_max,
+            d_min=min_dist_meters,
+        )
+
+
 def estimate_missing_point_dists(
     shape: GeomWithDists,
     points: GeomWithDists,
-    travel_seconds: typing.Optional[ArrayLike],
+    travel_times: typing.Optional[ArrayLike],
     min_dist_meters: float = 25.0,
     max_move_trusted_meters: float = 15.0,
 ) -> GeomWithDists:
@@ -278,8 +320,14 @@ def estimate_missing_point_dists(
     minimizing the sum of squares of deviations to the input data.
     If dists change too much during this process, they are marked as untrusted.
 
-    If `travel_seconds` is given and finite and non-negative everywhere
-    and not vanishing everywhere, `travel_seconds` is used to estimate missing point distances.
+    `travel_times` is an optional array-like containing numbers that give the departure/arrival time
+    at the points/stops in an arbitrary but consistent unit with an arbitrary offset
+    under the assumption that the vehicle would not wait at the stop (arrival = departure time).
+    Or in other words, the pure cumulative travel times. It can contain NaNs/Nones.
+    If `travel_times` is given and the first and last value are not missing and different
+    from each other and the finite values are all in increasing order
+    (not necessarily strictly increasing), `travel_times` is used to estimate
+    missing point distances.
     Otherwise, missing point distances are filled equidistantly.
     All estimated point distances are marked as untrusted.
 
@@ -292,9 +340,28 @@ def estimate_missing_point_dists(
 
     n_points = len(points.dists)
 
+    # If the first/last point have unknown dist, we make the assumption that they
+    # lie at the start/end of the shape. This does not have to be true but it is the
+    # most sensible estimate we can make. And we need at least two known dists, so
+    # we have to make an assumption here.
+    # The iterative solution will correct this later if it is wrong.
+    dists = points.dists.copy()
+    finite_dists_mask = points.finite_dists_mask.copy()
+    original_dists_mask = points.original_dists_mask.copy()
+    geom = points.geom  # no copy as written in docstring
+    del points  # protect from using below
+    if not finite_dists_mask[0]:
+        finite_dists_mask[0] = True
+        dists[0] = shape.dists[0]
+        original_dists_mask[0] = False
+    if not finite_dists_mask[-1]:
+        finite_dists_mask[-1] = True
+        dists[-1] = shape.dists[-1]
+        original_dists_mask[0] = False
+
     try:
-        fixed_point_dists = fix_sequence_with_missing_values(
-            values=points.dists,
+        fixed_dists = fix_sequence_with_missing_values(
+            values=dists,
             v_min=shape.dists[0],
             v_max=shape.dists[-1],
             d_min=min_dist_meters,
@@ -303,112 +370,87 @@ def estimate_missing_point_dists(
         raise SnappingError(
             "shape too short / too many points / min dist too large"
         ) from error
-    not_too_far_away = (
-        np.abs(fixed_point_dists - points.dists) <= max_move_trusted_meters
-    )
-    dists = fixed_point_dists
-    original_dists_mask = points.original_dists_mask & not_too_far_away
+    not_too_far_away = np.abs(fixed_dists - dists) <= max_move_trusted_meters
+    original_dists_mask &= not_too_far_away
+    dists = fixed_dists
 
     # Now the finite point dists are all in order and there is enough space between them
-    # and enough space for the missing dists.
+    # and enough space for the missing dists and we have at least two unique known dists.
     # This allows us to use the finite dists for interpolating the missing distances.
 
-    finite_point_indices = np.nonzero(points.finite_dists_mask)[0]
-    finite_point_dists = dists[finite_point_indices]
-    missing_indices = np.nonzero(np.logical_not(points.finite_dists_mask))[0]
+    missing_mask = np.logical_not(finite_dists_mask)
 
-    # If the first/last point have unknown dist, we make the assumption that they
-    # lie at the start/end of the shape. This does not have to be true but it is the
-    # most sensible estimate we can make.
-    # The iterative solution will correct this later if it is wrong.
-    known_point_indices = []
-    known_point_dists = []
-    if not points.finite_dists_mask[0]:
-        known_point_indices.append(0)
-        known_point_dists.append(shape.dists[0])
-    known_point_indices.extend(finite_point_indices)
-    known_point_dists.extend(finite_point_dists)
-    if not points.finite_dists_mask[-1]:
-        known_point_indices.append(n_points - 1)
-        known_point_dists.append(shape.dists[-1])
-
-    use_travel_seconds = travel_seconds is not None
-    if use_travel_seconds:
-        travel_seconds_arr = np.asarray(travel_seconds, dtype=float)
-        # We tolerate zero travel times since this often occurs due to rounding to full minutes.
-        # We later fix this by forcing min_dist_meters on the interpolated point distances.
-        # If any travel time is however missing or negative, we assume all travel times are garbage,
-        # falling back to equidistant interpolation since there is no obvious way
-        # to fix negative / missing travel times.
-        use_travel_seconds = (
-            np.all(np.isfinite(travel_seconds_arr))
-            and np.all(travel_seconds_arr >= 0)
-            and not np.all(travel_seconds == 0)
+    # shortcut if no dists are missing
+    if not np.any(missing_mask):
+        return GeomWithDists(
+            geom,
+            dists,
+            original_dists_mask,
+            finite_dists_mask,
+            n_points,
         )
-        if use_travel_seconds:
-            travel_times = np.empty_like(dists)
-            travel_times[0] = 0.0
-            travel_times[1:] = np.cumsum(travel_seconds_arr)
 
-            # We have to eliminate duplicate consecutive travel times for the interpolation to work.
-            x = travel_times[known_point_indices]
-            x, indices = np.unique(x, return_index=True)
-            assert len(x) >= 2
-            y = np.array(known_point_dists, dtype=float)[indices]
-            x_prime = travel_times[missing_indices]
-
-    if not use_travel_seconds:
-        x = known_point_indices
-        y = known_point_dists
-        x_prime = missing_indices
-
-    dists[missing_indices] = interp1d(
-        x,
-        y,
-        kind="linear",
-        copy=False,
-        bounds_error=False,
-        fill_value="extrapolate",
-        assume_sorted=True,
-    )(x_prime)
-
-    if use_travel_seconds:
-        # dists estimated from travel times could be too close together or too close to known dists
-        # so we fix this here for every group of consecutive missing distances
-        for _, group in itertools.groupby(
-            enumerate(missing_indices),
-            # this function is constant as long as indices increase with step 1, thus giving
-            # us groups of consecutive indices
-            lambda t: t[0] - t[1],
+    if travel_times is not None:
+        travel_times_arr = np.asarray(travel_times, dtype=float)
+        del travel_times
+        if len(travel_times_arr) != n_points:
+            # we should not ignore this since this is probably an error in the code
+            # and not in the data
+            raise ValueError("travel_times has wrong shape")
+        # We tolerate zero travel times between stops since this often occurs due to
+        # rounding to full minutes.
+        # We later fix this by forcing min_dist_meters on the interpolated point distances.
+        # If any travel time is however decreasing, we assume all travel times are garbage,
+        # falling back to equidistant interpolation since there is no obvious way
+        # to fix negative travel times.
+        mask = np.logical_not(np.isnan(travel_times_arr))
+        usable_travel_times = travel_times_arr[mask]
+        if (
+            mask[0]
+            and mask[-1]
+            and travel_times_arr[-1] - travel_times_arr[0] > 0
+            and np.all(np.diff(usable_travel_times) >= 0)
         ):
-            # the available space might be just enough, so we lower our standard a bit
-            # to hopefully not get into trouble with floating point inaccuracies
-            min_dist_meters_tilde = 0.995 * min_dist_meters
-            indices = [item[1] for item in group]
-            i_left = indices[0] - 1
-            i_right = indices[-1] + 1
-            v_min = (
-                dists[i_left] + min_dist_meters_tilde if i_left >= 0 else shape.dists[0]
-            )
-            v_max = (
-                dists[i_right] - min_dist_meters_tilde
-                if i_right < n_points
-                else shape.dists[-1]
-            )
-            dists[indices] = fix_sequence(
-                values=dists[indices],
-                v_min=v_min,
-                v_max=v_max,
-                d_min=min_dist_meters_tilde,
-            )
+            # We can only estimate where we have known travel time.
+            # The rest of the missing dists will be filled later by the equidistant estimation
+            output_mask = missing_mask & mask
 
-    # should usually already be set to False, but we don't know for sure
-    original_dists_mask[missing_indices] = False
+            if np.any(output_mask):
+                input_mask = finite_dists_mask & mask
+                x = travel_times_arr[input_mask]
+                y = dists[input_mask]
+                x_prime = travel_times_arr[output_mask]
+                y_prime = _get_estimator(x, y)(x_prime)
+                dists[output_mask] = y_prime
+                # dists estimated from travel times could be too close together
+                # or too close to known dists
+                _fix_travel_time_dists(
+                    missing_mask,
+                    dists,
+                    shape.dists[0],
+                    shape.dists[-1],
+                    min_dist_meters,
+                )
+                missing_mask[output_mask] = False
+                original_dists_mask[output_mask] = False
+                finite_dists_mask[output_mask] = True
+
+    # now interpolate the remaining missing dists equidistantly (i.e. using indices as x values)
+    if np.any(missing_mask):
+        x = np.nonzero(finite_dists_mask)[0]
+        y = dists[finite_dists_mask]
+        x_prime = np.nonzero(missing_mask)[0]
+        y_prime = _get_estimator(x, y)(x_prime)
+        dists[missing_mask] = y_prime
+        original_dists_mask[missing_mask] = False
+        finite_dists_mask[missing_mask] = True
+
+    assert np.all(finite_dists_mask)
     return GeomWithDists(
-        points.geom,
+        geom,
         dists,
         original_dists_mask,
-        np.ones_like(points.finite_dists_mask),
+        finite_dists_mask,
         n_points,
     )
 

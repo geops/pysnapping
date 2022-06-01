@@ -325,11 +325,11 @@ def test_split_shape_fill_missing_dists():
 
     # Now we pass travel times indicating that both 1 and 2 should
     # be on the upper branch.
-    travel_seconds = [7 * 60, 0, 3 * 60]
+    travel_times = [0, 7 * 60, 7 * 60, 10 * 60]
     line_strings = split_shape(
         shape,
         points,
-        travel_seconds,
+        travel_times,
         try_reverse=False,
         # tolerate snapped stop ending up far away from original stop
         res_atol=1000,
