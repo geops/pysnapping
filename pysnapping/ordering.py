@@ -4,9 +4,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 import cvxpy
 
-
-class NoSolution(ValueError):
-    pass
+from . import NoSolution
 
 
 def _check_params(
@@ -143,33 +141,40 @@ def fix_sequence_with_missing_values(
     `None` is also accepted as `float("nan")`.
     """
     values_arr = np.asarray(values, dtype=float)
-    present_indices = np.nonzero(np.logical_not(np.isnan(values_arr)))[0]
-    if len(present_indices) == 0:
+    available_indices = np.nonzero(np.logical_not(np.isnan(values_arr)))[0]
+
+    if len(available_indices) == 0:
+        available_length = v_max - v_min
+        required_length = d_min * (len(values_arr) - 1)
+        if required_length > available_length:
+            raise NoSolution(
+                f"required length {required_length} > available length {available_length}"
+            )
         if values_arr is values:
-            return values_arr.copy()
+            solution = values_arr.copy()
         else:
-            return values_arr
+            solution = values_arr
+    else:
+        # space for missing values at the beginning
+        v_min_tilde = v_min + d_min * available_indices[0]
 
-    # space for missing values at the beginning
-    v_min_tilde = v_min + d_min * present_indices[0]
+        # space for missing values at the end
+        v_max_tilde = v_max - d_min * (len(values_arr) - 1 - available_indices[-1])
 
-    # space for missing values at the end
-    v_max_tilde = v_max - d_min * (len(values_arr) - 1 - present_indices[-1])
+        # space for missing values in between
+        d_min_tilde = d_min * np.diff(available_indices)
 
-    # space for missing values in between
-    d_min_tilde = d_min * np.diff(present_indices)
-
-    values_tilde = values_arr[present_indices]
-    solution_tilde = fix_sequence(
-        values_tilde,
-        v_min_tilde,
-        v_max_tilde,
-        d_min_tilde,
-        atol=atol,
-        **cvxpy_solve_args,
-    )
-    solution = np.empty_like(values_arr)
-    solution.fill(np.nan)
-    solution[present_indices] = solution_tilde
+        values_tilde = values_arr[available_indices]
+        solution_tilde = fix_sequence(
+            values_tilde,
+            v_min_tilde,
+            v_max_tilde,
+            d_min_tilde,
+            atol=atol,
+            **cvxpy_solve_args,
+        )
+        solution = np.empty_like(values_arr)
+        solution.fill(np.nan)
+        solution[available_indices] = solution_tilde
 
     return solution

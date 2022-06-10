@@ -3,6 +3,7 @@ from numpy.testing import assert_allclose
 import numpy as np
 
 from pysnapping.ordering import fix_sequence, fix_sequence_with_missing_values, order_ok
+from pysnapping import NoSolution
 
 
 @pytest.mark.parametrize(
@@ -65,3 +66,18 @@ def test_fix_sequence_with_missing_values():
         [None, None, 2, 3, 4, None, 6, 7, None, None, 10, 29, None], dtype=float
     )
     assert_allclose(fixed_values, expected, rtol=0, atol=0.02)
+
+
+def test_fix_sequence_with_only_missing_values():
+    values = [None, None, None]
+    v_min = 0
+    v_max = 10
+
+    with pytest.raises(NoSolution):
+        fix_sequence_with_missing_values(values, v_min, v_max, d_min=5.001)
+
+    for d_min in (4.9, 4.99, 4.999, 4.9999, 5):
+        fixed_values = fix_sequence_with_missing_values(
+            values, v_min, v_max, d_min=d_min
+        )
+        assert_allclose(fixed_values, [np.nan] * 3)
