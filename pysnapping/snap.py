@@ -312,7 +312,7 @@ class WGS84TrajectoryTrip:
         self.atol = atol
         if self.reverse_order_allowed and np.any(self.dists_trusted):
             raise ValueError("reverse order is allowed but there are trusted dists")
-        if not self.dists_ok(self.lat_lon_d[:, 2]):
+        if not self.order_ok(self.lat_lon_d[:, 2]):
             raise ValueError("bad distances")
 
     def __len__(self) -> int:
@@ -333,15 +333,6 @@ class WGS84TrajectoryTrip:
     @property
     def dists(self):
         return self.lat_lon_d[:, 2]
-
-    def dists_ok(self, dists: ArrayLike) -> bool:
-        return order_ok(
-            dists,
-            self.trajectory.d_min,
-            self.trajectory.d_max,
-            self.min_spacing,
-            self.atol,
-        )
 
     def snap_trip_points(
         self,
