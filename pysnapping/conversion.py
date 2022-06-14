@@ -73,6 +73,7 @@ def estimate_geodesic_distances(
     max_move_trusted: float = 15.0,
     atol: float = 5.0,
     reverse_order_allowed: bool = True,
+    distrust_all_distances: bool = False,
 ) -> WGS84TrajectoryTrip:
     """Convert a TrajectoryTrip to a WGS84TrajectoryTrip.
 
@@ -147,6 +148,9 @@ def estimate_geodesic_distances(
         min_spacing=min_spacing,
         max_move_trusted=max_move_trusted,
     )
+
+    if distrust_all_distances:
+        trip_dists_trusted.fill(False)
 
     return WGS84TrajectoryTrip(
         trajectory=wgs84_traj,
