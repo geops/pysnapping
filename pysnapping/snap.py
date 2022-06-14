@@ -232,6 +232,7 @@ class WGS84Trajectory:
         """
         trajectory = cls.__new__(cls)
         trajectory.lat_lon_d = np.array(lat_lon_d, dtype=float, copy=copy)
+        return trajectory
 
     def copy(self):
         return self.__class__.from_trusted_data(self.lat_lon_d)
