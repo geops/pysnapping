@@ -12,7 +12,7 @@ from .linear_referencing import (
     substring,
     find_location,
     interpolate,
-    project,
+    ProjectionTarget,
 )
 from .util import iter_consecutive_groups
 from . import SnappingError
@@ -434,6 +434,7 @@ class WGS84TrajectoryTrip:
         )
 
         # first try just projecting; if this works, we're done
+        target = ProjectionTarget(target_lat_lon_d[:, :2])
         snapped_points = [
             WGS84SnappedTripPoint(
                 self,
@@ -441,7 +442,7 @@ class WGS84TrajectoryTrip:
                 float(
                     interpolate(
                         target_lat_lon_d[:, 2],
-                        project(target_lat_lon_d[:, :2], self.lat_lon[i]).location,
+                        target.project(self.lat_lon[i]).location,
                     )
                 ),
             )
@@ -450,10 +451,13 @@ class WGS84TrajectoryTrip:
 
         d_ok = partial(self.order_ok, d_min=d_min, d_max=d_max)
         if d_ok(snapped_points):
+            logger.debug("projecting in forward direction succesful")
             is_reversed = False
         elif self.reverse_order_allowed and d_ok(reversed(snapped_points)):
+            logger.debug("projecting in reverse direction succesful")
             is_reversed = True
         else:
+            logger.debug("projected solution not admissible")
             snapped_points = self._snap_untrusted_iteratively(
                 indices=indices,
                 d_min=d_min,
@@ -576,7 +580,7 @@ class WGS84TrajectoryTrip:
                 for i in range(0, len(region_boundaries) - 1, 2)
             ]
             points_projected_to_regions = [
-                project(region[:, :2], self.lat_lon[i])
+                ProjectionTarget(region[:, :2]).project(self.lat_lon[i])
                 for i, region in zip(indices, regions)
             ]
             new_point_dists = np.array(
@@ -633,7 +637,12 @@ class WGS84SnappedTripPoint:
             )[2]
         )
 
-    def snapping_distance_valid(self, rtol: float = 3.0, atol: float = 200.0) -> bool:
+    def snapping_distance_valid(
+        self,
+        rtol: float = 3.0,
+        atol: float = 200.0,
+        target: typing.Optional[ProjectionTarget] = None,
+    ) -> bool:
         """Determine whether the geodesic snapping distance is valid.
 
         The geodesic distance between the source and snapped point is compared to the
@@ -644,9 +653,12 @@ class WGS84SnappedTripPoint:
         rtol/atol -- Relative/absolute tolerance.
                      Default means that a snapped point may be 3 times as far away from the
                      original point than the closest point on the trajectory plus 200 meters.
+        target -- optional pre-computed projection target (for performance optimizations)
         """
+        if target is None:
+            target = ProjectionTarget(self.trip.trajectory.lat_lon)
         source_lat_lon = self.trip.lat_lon[self.index]
-        projected_lat_lon = project(self.trip.trajectory.lat_lon, source_lat_lon).coords
+        projected_lat_lon = target.project(source_lat_lon).coords
         projected_distance = WGS84_GEOD.inv(
             lats1=source_lat_lon[0],
             lons1=source_lat_lon[1],
@@ -677,9 +689,14 @@ class WGS84SnappedTripPoints:
 
         See WGS84SnappedTripPoint.snapping_distance_valid for meaning of parameters.
         """
-        return all(
-            p.snapping_distance_valid(rtol=rtol, atol=atol) for p in self.snapped_points
-        )
+        if self.snapped_points:
+            target = ProjectionTarget(self.snapped_points[0].trip.trajectory.lat_lon)
+            return all(
+                p.snapping_distance_valid(rtol=rtol, atol=atol, target=target)
+                for p in self.snapped_points
+            )
+        else:
+            return True
 
     def get_inter_point_trajectories(self) -> typing.List[WGS84Trajectory]:
         """Split the trajectory at the snapped points.

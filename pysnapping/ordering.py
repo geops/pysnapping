@@ -1,10 +1,14 @@
 import typing
+import logging
 
 import numpy as np
 from numpy.typing import ArrayLike
 import cvxpy
 
 from . import NoSolution
+
+
+logger = logging.getLogger(__name__)
 
 
 def _check_params(
@@ -100,6 +104,8 @@ def fix_sequence(
         scale = available_length / required_length
         solution[1:] += scale * np.cumsum(d_min_arr)
         return solution
+    elif order_ok(values, v_min, v_max, d_min, atol):
+        return values_arr
 
     # Still here? Non-trivial but existing solution:
 
@@ -121,7 +127,11 @@ def fix_sequence(
             f"solver finished with non-optimal status {problem.status!r}"
         )
 
-    return v.value
+    solution = v.value
+
+    logger.debug("quadratic programming solution: %s -> %s", values_arr, solution)
+
+    return solution
 
 
 def fix_sequence_with_missing_values(

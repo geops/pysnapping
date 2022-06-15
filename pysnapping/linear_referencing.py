@@ -25,6 +25,119 @@ class Location(typing.NamedTuple):
             )
 
 
+class ProjectionTarget:
+    """An N-dimensional linestring optimized as a projection target."""
+
+    __slots__ = (
+        "segment_starts",
+        "segment_dirs",
+        "norm_segment_dirs_squared",
+        "short_segments",
+        "infinite_head",
+        "infinite_tail",
+    )
+
+    segment_starts: np.ndarray
+    segment_dirs: np.ndarray
+    norm_segment_dirs_squared: np.ndarray
+    short_segments: np.ndarray
+    infinite_head: bool
+    initite_tail: bool
+
+    def __init__(
+        self,
+        line_string_coords: np.ndarray,
+        infinite_head: bool = False,
+        infinite_tail: bool = False,
+        epsilon: float = 1e-10,
+    ):
+        """Initialize ProjectionTarget.
+
+        `line_string_coords` is a sequence of coords (vertex index at axis 0).
+        `infinite_head` and `infinite_tail` control whether
+        first/last segment should be extended to infinity.
+        If enabled, the fraction of the location might be < 0 or > 1 after projecting.
+        `epsilon` is used to identify very short segments (for numerical reasons).
+
+        Attention: A mixture of views and pre-processed data of `line_string_coords` is
+        stored for performance reasons. Modifying `line_string_coords` leads to undefined
+        behavior when projecting later! If you need to modify, pass a copy to the constructor.
+        """
+        # ndim is the number of axes, not the number of cartesian dimensions
+        if line_string_coords.ndim != 2:
+            raise ValueError("line_string_coords has to be a sequence of points")
+        n_vertices = line_string_coords.shape[0]
+        if n_vertices < 2:
+            raise ValueError("at least two vertices are needed")
+
+        self.segment_starts = line_string_coords[:-1]
+        segment_ends = line_string_coords[1:]
+        self.segment_dirs = segment_ends - self.segment_starts
+
+        # sum(-1) means sum over last axis
+        self.norm_segment_dirs_squared = (self.segment_dirs**2).sum(-1)
+        short_segment_mask = self.norm_segment_dirs_squared < epsilon**2
+        self.infinite_head = infinite_head
+        self.infinite_tail = infinite_tail
+        if infinite_head and short_segment_mask[0]:
+            raise ValueError("head segment too short, consider using simplify first")
+        if infinite_tail and short_segment_mask[-1]:
+            raise ValueError("tail segment too short, consider using simplify first")
+        # indexing with integers is faster than indexing with a mask for the
+        # common use case of a sparse mask
+        self.short_segments = np.nonzero(short_segment_mask)[0]
+        self.norm_segment_dirs_squared[self.short_segments] = 1.0
+
+    def project(self, point_coords: np.ndarray) -> "ProjectedPoint":
+        """Project a point to the linestring.
+
+        This is basically a generalization and optimization of shapely.geometry.LineString.project.
+
+        `line_string_coords` is a sequence of coords (vertex index at axis 0).
+        `point_coords` are the coordinates of the point.
+        `infinite_head` and `infinite_tail` control whether
+        first/last segment should be extended to infinity.
+        If enabled, the fraction of the location might be < 0 or > 1
+        `epsilon` is used to identify very short segments.
+        """
+        if point_coords.ndim != 1:
+            raise ValueError("point has to contain exactly 1 axis")
+        if point_coords.shape != self.segment_starts.shape[1:]:
+            raise ValueError("point and target cartesian dimensions do not match")
+
+        point_dirs = point_coords[None, :] - self.segment_starts
+
+        # many scalar products
+        fractions = (self.segment_dirs * point_dirs).sum(-1)
+
+        fractions /= self.norm_segment_dirs_squared
+        fractions[self.short_segments] = 0.5
+
+        clip_slice = slice(
+            1 if self.infinite_head else None, -1 if self.infinite_tail else None
+        )
+        clip(fractions[clip_slice], 0.0, 1.0, out=fractions[clip_slice])
+        if self.infinite_head and (len(fractions) > 1 or not self.infinite_tail):
+            fractions[0] = min(fractions[0], 1)
+        if self.infinite_tail and (len(fractions) > 1 or not self.infinite_head):
+            fractions[-1] = max(fractions[-1], 0)
+
+        projected_points = fractions[:, None] * self.segment_dirs
+        projected_points += self.segment_starts
+        # ranks are squared cartesian distances (sqrt is monotone, so we get the same minimum
+        # as for cartesian distances with less computational effort)
+        tmp = point_coords[None, :] - projected_points
+        tmp *= tmp
+        ranks = tmp.sum(-1)
+        segment = int(np.argmin(ranks))
+
+        return ProjectedPoint(
+            projected_points[segment].copy(),
+            Location(segment, float(fractions[segment])),
+            float(ranks[segment] ** 0.5),
+        )
+
+
 class ProjectedPoint(typing.NamedTuple):
     coords: np.ndarray
     location: Location
@@ -118,76 +231,6 @@ def substring(
     if interpolate_end:
         sub_data_view[-1] = interpolate(data_view, end)
     return sub_data
-
-
-def project(
-    line_string_coords: np.ndarray,
-    point_coords: np.ndarray,
-    infinite_head: bool = False,
-    infinite_tail: bool = False,
-    epsilon: float = 1e-10,
-) -> ProjectedPoint:
-    """Project point to linestring in N dimensions.
-
-    This is a generalization of shapely.geometry.LineString.project.
-
-    `line_string_coords` is a sequence of coords (vertex index at axis 0).
-    `point_coords` are the coordinates of the point.
-    `infinite_head` and `infinite_tail` control whether
-    first/last segment should be extended to infinity.
-    If enabled, the fraction of the location might be < 0 or > 1
-    `epsilon` is used to identify very short segments.
-    """
-    # ndim is the number of axes, not the number of cartesian dimensions
-    if line_string_coords.ndim != 2:
-        raise ValueError("line_string_coords has to be a sequence of points")
-    if point_coords.ndim != 1:
-        raise ValueError("point has to contain exactly 1 axis")
-    n_vertices = line_string_coords.shape[0]
-    if n_vertices < 2:
-        raise ValueError("at least two vertices are needed")
-    if point_coords.shape != line_string_coords.shape[1:]:
-        raise ValueError("point and vertex dimensions do not match")
-
-    segment_starts = line_string_coords[:-1]
-    segment_ends = line_string_coords[1:]
-    segment_dirs = segment_ends - segment_starts
-
-    # sum(-1) means sum over last axis
-    norm_segment_dirs_squared = (segment_dirs**2).sum(-1)
-    mask = norm_segment_dirs_squared < epsilon**2
-    if infinite_head and mask[0]:
-        raise ValueError("head segment too short, consider using simplify first")
-    if infinite_tail and mask[-1]:
-        raise ValueError("tail segment too short, consider using simplify first")
-    norm_segment_dirs_squared[mask] = 1.0
-
-    point_dirs = point_coords[None, :] - segment_starts
-
-    # many scalar products
-    fractions = (segment_dirs * point_dirs).sum(-1)
-
-    fractions /= norm_segment_dirs_squared
-    fractions[mask] = 0.5
-
-    clip_slice = slice(1 if infinite_head else None, -1 if infinite_tail else None)
-    clip(fractions[clip_slice], 0.0, 1.0, out=fractions[clip_slice])
-    if infinite_head and (len(fractions) > 1 or not infinite_tail):
-        fractions[0] = min(fractions[0], 1)
-    if infinite_tail and (len(fractions) > 1 or not infinite_head):
-        fractions[-1] = max(fractions[-1], 0)
-
-    projected_points = segment_starts + fractions[:, None] * segment_dirs
-    # ranks are squared cartesian distances (sqrt is monotone, so we get the same minimum
-    # as for cartesian distances with less computational effort)
-    ranks = ((point_coords[None, :] - projected_points) ** 2).sum(-1)
-    segment = int(np.argmin(ranks))
-
-    return ProjectedPoint(
-        projected_points[segment].copy(),
-        Location(segment, float(fractions[segment])),
-        float(ranks[segment] ** 0.5),
-    )
 
 
 def find_location(
