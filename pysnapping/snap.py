@@ -1,6 +1,7 @@
 import typing
 from functools import partial
 import logging
+from enum import Enum
 
 import pyproj
 import numpy as np
@@ -22,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 WGS84_GEOD = pyproj.Geod(ellps="WGS84")
 WGS84_CRS = pyproj.CRS.from_epsg(4326)
+
+
+def _get_geojson_crs():
+    # GeoJSON is lon,lat but WGS84 is lat,lon!
+    data = WGS84_CRS.to_json_dict()
+    data["name"] = "GeoJSON"
+    del data["id"]
+    data["coordinate_system"]["axis"] = data["coordinate_system"]["axis"][::-1]
+    assert data["coordinate_system"]["axis"][0]["abbreviation"].lower() == "lon"
+    assert data["coordinate_system"]["axis"][1]["abbreviation"].lower() == "lat"
+    return pyproj.CRS.from_json_dict(data)
+
+
+GEOJSON_CRS = _get_geojson_crs()
+
+
+class DistanceType(Enum):
+    trusted = "trusted"
+    projected = "projected"
+    iterative = "iterative"
 
 
 def array_chk(
@@ -363,7 +384,9 @@ class WGS84TrajectoryTrip:
 
         # trusted distances
         for i in trusted_indices:
-            snapped_points[i] = WGS84SnappedTripPoint(self, i, self.dists[i])
+            snapped_points[i] = WGS84SnappedTripPoint(
+                self, i, self.dists[i], DistanceType.trusted
+            )
 
         # every group of consecutive points with untrusted distances is an isolated problem
         untrusted_indices = np.nonzero(np.logical_not(self.dists_trusted))[0]
@@ -445,6 +468,7 @@ class WGS84TrajectoryTrip:
                         target.project(self.lat_lon[i]).location,
                     )
                 ),
+                DistanceType.projected,
             )
             for i in indices
         ]
@@ -594,7 +618,10 @@ class WGS84TrajectoryTrip:
 
         logger.debug("converged in %d iterations", n_iter)
 
-        return [WGS84SnappedTripPoint(self, i, d) for i, d in zip(indices, point_dists)]
+        return [
+            WGS84SnappedTripPoint(self, i, d, DistanceType.iterative)
+            for i, d in zip(indices, point_dists)
+        ]
 
 
 class WGS84SnappedTripPoint:
@@ -602,21 +629,25 @@ class WGS84SnappedTripPoint:
         "trip",
         "index",
         "trajectory_distance",
+        "method",
     )
 
     trip: WGS84TrajectoryTrip
     index: int
     trajectory_distance: float
+    method: DistanceType
 
     def __init__(
         self,
         trip: WGS84TrajectoryTrip,
         index: int,
         trajectory_distance: float,
+        method: DistanceType,
     ):
         self.trip = trip
         self.index = index
         self.trajectory_distance = trajectory_distance
+        self.method = method
 
     def get_trajectory_location(self) -> Location:
         return find_location(self.trip.trajectory.dists, self.trajectory_distance)
@@ -737,3 +768,63 @@ class WGS84SnappedTripPoints:
             return [t.lat_lon[::-1].copy() for t in trajectories]
         else:
             return [t.lat_lon.copy() for t in trajectories]
+
+    def to_geojson(self) -> typing.Dict[str, typing.Any]:
+        from .conversion import transform_coords
+
+        trafo = partial(
+            transform_coords,
+            trafo=pyproj.Transformer.from_crs(WGS84_CRS, GEOJSON_CRS).transform,
+        )
+        line_strings = self.get_inter_point_linestrings_in_travel_direction()
+        features = [
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": trafo(ls).tolist()},
+                "properties": {
+                    "what": "partial trajectory",
+                    "from_index": int(self.snapped_points[i].index),
+                    "to_index": int(self.snapped_points[i + 1].index),
+                },
+            }
+            for i, ls in enumerate(line_strings)
+        ]
+        features.extend(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": trafo(p.get_lat_lon()).tolist(),
+                },
+                "properties": {
+                    "what": "snapped point",
+                    "index": int(p.index),
+                    "trajectory_distance": float(p.trajectory_distance),
+                    "snapping_distance": float(p.get_geodesic_snapping_distance()),
+                    "method": p.method.value,
+                },
+            }
+            for p in self.snapped_points
+        )
+        features.extend(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": trafo(p.trip.lat_lon[p.index]).tolist(),
+                },
+                "properties": {
+                    "what": "trip point",
+                    "index": int(p.index),
+                    "trajectory_distance": float(p.trip.dists[p.index]),
+                    "distance_trusted": bool(p.trip.dists_trusted[p.index]),
+                },
+            }
+            for p in self.snapped_points
+        )
+
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "properties": {"trajectory_reversed": bool(self.dists_descending)},
+        }

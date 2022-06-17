@@ -23,6 +23,22 @@ from .util import iter_consecutive_groups
 logger = logging.getLogger(__name__)
 
 
+def transform_coords(
+    coords: ArrayLike,
+    trafo: typing.Callable[
+        [np.ndarray, np.ndarray], typing.Tuple[np.ndarray, np.ndarray]
+    ],
+    out: typing.Optional[np.ndarray] = None,
+) -> np.ndarray:
+    coords_arr = np.asarray(coords, dtype=float)
+    if coords_arr.shape[-1] != 2:
+        raise ValueError("last axis has to be of length 2")
+    if out is None:
+        out = np.empty_like(coords_arr)
+    out[..., 0], out[..., 1] = trafo(coords_arr[..., 0], coords_arr[..., 1])
+    return out
+
+
 def simplify_2d_keep_z(
     coords: ArrayLike, tolerance, fake_nan=sys.float_info.max
 ) -> np.ndarray:
@@ -103,11 +119,8 @@ def estimate_geodesic_distances(
     wgs84_trip_lat_lon_d = np.empty_like(trip.xydt[:, :3])
     if trip.trajectory.crs != WGS84_CRS:
         trafo = pyproj.Transformer.from_crs(trip.trajectory.crs, WGS84_CRS).transform
-        traj_lat_lon = np.empty_like(trip.trajectory.xy)
-        traj_lat_lon[:, 0], traj_lat_lon[:, 1] = trafo(
-            trip.trajectory.x, trip.trajectory.y
-        )
-        wgs84_trip_lat_lon_d[:, 0], wgs84_trip_lat_lon_d[:, 1] = trafo(trip.x, trip.y)
+        traj_lat_lon = transform_coords(trafo, trip.trajectory.xy)
+        transform_coords(trafo, trip.xy, out=wgs84_trip_lat_lon_d[:, :2])
     else:
         traj_lat_lon = trip.trajectory.xy
         wgs84_trip_lat_lon_d[:, :2] = trip.xy
