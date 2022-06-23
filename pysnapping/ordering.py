@@ -78,7 +78,7 @@ def fix_sequence(
     v_min and v_max with distances d_min.
     Raises cvxpy.SolverError if the optimal solution cannot be found.
 
-    atol is the desired absolute accuracy which defaults to 1% of the mean available space per value
+    atol is the desired absolute accuracy which defaults to 2% of the mean available space per value
     """
     values_arr, d_min_arr = _check_params(values, v_min, v_max, d_min)
     n_values = len(values_arr)
@@ -91,7 +91,7 @@ def fix_sequence(
     available_length = v_max - v_min
     required_length = d_min_arr.sum()
     if atol is None:
-        atol = 0.01 * available_length / n_values
+        atol = 0.02 * available_length / n_values
     if required_length > available_length:
         raise NoSolution(
             f"required length {required_length} > available length {available_length}"
@@ -116,7 +116,7 @@ def fix_sequence(
     problem = cvxpy.Problem(objective, constraints)
 
     if "eps_abs" not in cvxpy_solve_args and "eps_rel" not in "cvxpy_solve_args":
-        cvxpy_solve_args["eps_abs"] = atol
+        cvxpy_solve_args["eps_abs"] = 0.5 * atol
         cvxpy_solve_args["eps_rel"] = 0
 
     # may raise cvxpy.SolverError

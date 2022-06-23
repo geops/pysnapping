@@ -15,5 +15,11 @@ setup(
     zip_safe=False,
     packages=find_packages(),
     include_package_data=True,
-    install_requires=["shapely", "numpy", "scipy", "pyproj", "cvxpy"],
+    install_requires=[
+        "shapely",
+        "numpy",
+        "scipy",
+        "pyproj>=3.2.0",  # for defining custom CRS
+        "cvxpy",
+    ],
 )

@@ -2,12 +2,14 @@ import typing
 from functools import partial
 import logging
 from enum import Enum
+import json
 
 import pyproj
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.interpolate import interp1d
 
-from .ordering import order_ok
+from .ordering import order_ok, fix_sequence_with_missing_values
 from .linear_referencing import (
     Location,
     substring,
@@ -16,7 +18,8 @@ from .linear_referencing import (
     ProjectionTarget,
 )
 from .util import iter_consecutive_groups
-from . import SnappingError
+from .interpolate import fix_repeated_x
+from . import SnappingError, NoSolution
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,82 @@ def _get_geojson_crs():
 
 
 GEOJSON_CRS = _get_geojson_crs()
+
+
+class SnappingParams(typing.NamedTuple):
+    """Parameters controlling snapping of trip points to the trajectory.
+
+    An external location is a point on the trajectory for a trip point.
+
+    If an external location is trusted, snapping will occur exactly to this location.
+    If an external location is distrusted but kept, the external location serves as a hint
+    where the snapping should occur.
+    If an external location is discarded or missing, a new untrusted location will be estimated
+    from trip timings with a fallback to equidistant placement between
+    surrounding trusted locations and the estimated location serves as a hint where
+    the snapping should occur.
+
+    All distances are in meters.
+
+    min_spacing:
+    The minimum travel distance along the trajectory between consecutive snapped points.
+
+    atol_spacing:
+    Absolute tolerance for checking if distances are admissible (correct min spacing and
+    inside trajectory bounds).
+
+    max_move_trusted:
+    When fixing minimum spacing/order: how far is the location allowed to move along the trajectory
+    to still count as trusted?
+
+    max_move_keep:
+    When fixing minimum spacing/order: how far is the location allowed to move along the trajectory
+    to still be kept at all?
+
+    rtol_trusted, atol_trusted:
+    Let d_min be the minimum distance of the point to the trajectory and d the distance
+    of the point to the external location on the trajectory.
+    If d <= rtol_trusted * d_min + atol_trusted, the external location is trusted.
+
+    rtol_keep, atol_keep:
+    Same as above but when the snapping distance is too large, the location is discarded.
+
+    reverse_order_allowed:
+    Whether to also try reversing the trajectory.
+    Only applies if no external locations are trusted.
+
+    short_trajectory_fallback:
+    If enabled and the trajectory is too short to snap all points
+    with min_spacing, points will be placed equidistantly along the whole trajectory.
+    """
+
+    min_spacing: float = 25.0
+    atol_spacing: float = 5.0
+    max_move_trusted: float = 15.0
+    max_move_keep: float = 300.0
+    rtol_trusted: float = 1.5
+    atol_trusted: float = 10.0
+    rtol_keep: float = 2.5
+    atol_keep: float = 150.0
+    reverse_order_allowed: bool = True
+    short_trajectory_fallback: bool = True
+
+    def dists_ok(
+        self,
+        distances: ArrayLike,
+        d_min: float,
+        d_max: float,
+        min_spacing: typing.Optional[float] = None,
+        atol: typing.Optional[float] = None,
+    ) -> bool:
+        if min_spacing is None:
+            min_spacing = self.min_spacing
+        if atol is None:
+            atol = self.atol_spacing
+        return order_ok(distances, d_min, d_max, min_spacing, atol)
+
+
+DEFAULT_SNAPPING_PARAMS = SnappingParams()
 
 
 class DistanceType(Enum):
@@ -112,19 +191,19 @@ class Trajectory:
         return len(self.xyd)
 
     @property
-    def xy(self):
+    def xy(self) -> np.ndarray:
         return self.xyd[:, :2]
 
     @property
-    def x(self):
+    def x(self) -> np.ndarray:
         return self.xyd[:, 0]
 
     @property
-    def y(self):
+    def y(self) -> np.ndarray:
         return self.xyd[:, 1]
 
     @property
-    def dists(self):
+    def dists(self) -> np.ndarray:
         return self.xyd[:, 2]
 
 
@@ -163,31 +242,28 @@ class TrajectoryTrip:
         return len(self.xydt)
 
     @property
-    def dists(self):
+    def dists(self) -> np.ndarray:
         return self.xydt[:, 2]
 
     @property
-    def xy(self):
+    def xy(self) -> np.ndarray:
         return self.xydt[:, :2]
 
     @property
-    def x(self):
-        return self.xyd[:, 0]
+    def x(self) -> np.ndarray:
+        return self.xydt[:, 0]
 
     @property
-    def y(self):
-        return self.xyd[:, 1]
+    def y(self) -> np.ndarray:
+        return self.xydt[:, 1]
 
     @property
-    def times(self):
+    def times(self) -> np.ndarray:
         return self.xydt[:, 3]
-
-    def get_reverse_order_allowed(self) -> bool:
-        return bool(np.all(np.isnan(self.dists)))
 
 
 class WGS84Trajectory:
-    """A line string on the WGS84 (EPSG:4326) ellipsoid with geodesic travel distances.
+    """A line string on the WGS84 ellipsoid with geodesic travel distances.
 
     Distances are the cumulative geodesic distances along the trajectory in meters.
     Distances do not have to start at 0. An arbitrary offset is allowed. This is useful
@@ -226,23 +302,23 @@ class WGS84Trajectory:
         return float(self.lat_lon_d[-1, 2])
 
     @property
-    def lat_lon(self):
+    def lat_lon(self) -> np.ndarray:
         return self.lat_lon_d[:, :2]
 
     @property
-    def lat(self):
+    def lat(self) -> np.ndarray:
         return self.lat_lon_d[:, 0]
 
     @property
-    def lon(self):
+    def lon(self) -> np.ndarray:
         return self.lat_lon_d[:, 1]
 
     @property
-    def dists(self):
+    def dists(self) -> np.ndarray:
         return self.lat_lon_d[:, 2]
 
     @property
-    def length(self):
+    def length(self) -> float:
         return self.lat_lon_d[-1, 2] - self.lat_lon_d[0, 2]
 
     @classmethod
@@ -260,7 +336,7 @@ class WGS84Trajectory:
 
     def split(
         self, where: typing.Sequence[typing.Union[Location, "WGS84SnappedTripPoint"]]
-    ):
+    ) -> list:
         if len(where) < 2:
             raise ValueError("at least two split positions are required")
         locations = [
@@ -287,74 +363,134 @@ class WGS84TrajectoryTrip:
 
     The distances are the geodesic travel distances along the trajectory in meters.
     All distances have to be finite, inside the distance range of the reference trajectory,
-    and increasing in steps of at least `min_spacing` (in meters like distances).
+    and increasing in steps of at least `snapping_params.min_spacing`.
 
     `dists_trusted` is a Boolean array indicating whether the corresponding distance is accurate or
     merely a rough hint.
 
-    `reverse_order_allowed` tells whether the points could also be in reverse order.
-    This flag has to be `False` if any distance is trusted.
-
-    `atol` is the absolute tolerance (in meters) when checking validity of distances.
+    `snapping_params` controls how snapping will be performed.
+    The supplied distances have to pass the `self.dists_ok` test.
     """
 
     __slots__ = (
         "trajectory",
         "lat_lon_d",
         "dists_trusted",
-        "min_spacing",
-        "reverse_order_allowed",
-        "atol",
+        "snapping_params",
     )
 
     trajectory: WGS84Trajectory
     lat_lon_d: np.ndarray
     dists_trusted: np.ndarray
-    min_spacing: float
-    reverse_order_allowed: bool
-    atol: float
+    snapping_params: SnappingParams
 
     def __init__(
         self,
         trajectory: WGS84Trajectory,
         lat_lon_d: ArrayLike,
         dists_trusted: ArrayLike,
-        min_spacing: float,
-        reverse_order_allowed: bool,
-        atol: float = 5.0,
+        snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
     ):
         self.trajectory = trajectory
         self.lat_lon_d = array_chk(lat_lon_d, (None, 3), chk_finite=True, dtype=float)
         self.dists_trusted = array_chk(
             dists_trusted, (len(self.lat_lon_d),), dtype=bool
         )
+        self.snapping_params = snapping_params
 
-        self.min_spacing = min_spacing
-        self.reverse_order_allowed = reverse_order_allowed
-        self.atol = atol
-        if self.reverse_order_allowed and np.any(self.dists_trusted):
-            raise ValueError("reverse order is allowed but there are trusted dists")
-        if not self.order_ok(self.lat_lon_d[:, 2]):
+        if snapping_params.short_trajectory_fallback and self.trajectory_is_too_short:
+            if not np.all(self.dists_trusted):
+                raise ValueError(
+                    "all dists need to be trustedd for trajectories that are too short"
+                )
+            if not self.dists_ok(self.dists, min_spacing=0.0, atol=0.0):
+                raise ValueError("bad distances")
+        elif not self.dists_ok(self.dists):
             raise ValueError("bad distances")
+
+    @classmethod
+    def from_invalid_dists_and_times(
+        cls,
+        trajectory: WGS84Trajectory,
+        lat_lon_d: ArrayLike,
+        times: ArrayLike,
+        snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
+    ):
+        """Initialize from bad distances and times.
+
+        Estimate missing trip distances and force correct range and minimum spacing.
+
+        If there are too many points to fit with the given min_spacing and the fallback is enabled,
+        points are placed equidistantly and are all marked as trusted.
+        If the fallback is disabled, NoSolution is raised.
+
+        If the trajectory is long enough:
+
+        At first, available dists are marked as untrusted or discarded if the snapped point
+        would be too far from the trip point according to `snapping_params`.
+
+        Then the order and minimum spacing between dists is fixed automatically,
+        minimizing the sum of squares of deviations to the input data.
+        If dists change too much during this process, they are marked as untrusted or discarded.
+
+        `times` is an array containing numbers that give the departure/arrival time
+        at the points/stops in an arbitrary but consistent unit with an arbitrary offset
+        under the assumption that the vehicle would not wait at the stop (arrival = departure time).
+        Or in other words, the cumulative travel times. It can contain NaNs.
+        If the finite values are all in increasing order (not necessarily strictly increasing),
+        `times` is used to estimate missing point distances where possible.
+        The estimated distances are again forced to fall inside the correct range with the correct
+        minimum spacing.
+
+        Afterwards, point distances that are still missing are filled equidistantly
+        between the sourrounding finite values using `d_min` and `d_max` as a
+        fallback at the boundaries.
+
+        All estimated point distances are marked as untrusted.
+        """
+        self = cls.__new__(cls)
+        self.trajectory = trajectory
+        self.lat_lon_d = array_chk(lat_lon_d, (None, 3), dtype=float)
+        if not np.all(np.isfinite(self.lat_lon)):
+            raise ValueError("coords have to be finite")
+        missing = np.isnan(self.dists)
+        available = np.logical_not(missing)
+        self.dists_trusted = available.copy()
+        self.snapping_params = snapping_params
+        times = array_chk(times, (len(self),), dtype=float, copy=False)
+
+        self._fix_distances(missing, available, times)
+
+        # is our implementation working?
+        assert np.all(np.isfinite(self.dists))
+        assert self.dists_ok(self.dists)
+
+        return self
 
     def __len__(self) -> int:
         return len(self.lat_lon_d)
 
     @property
-    def lat_lon(self):
+    def lat_lon(self) -> np.ndarray:
         return self.lat_lon_d[:, :2]
 
     @property
-    def lat(self):
+    def lat(self) -> np.ndarray:
         return self.lat_lon_d[:, 0]
 
     @property
-    def lon(self):
+    def lon(self) -> np.ndarray:
         return self.lat_lon_d[:, 1]
 
     @property
-    def dists(self):
+    def dists(self) -> np.ndarray:
         return self.lat_lon_d[:, 2]
+
+    @property
+    def trajectory_is_too_short(self) -> bool:
+        required_length = max(0, len(self) - 1) * self.snapping_params.min_spacing
+        # use >= to trigger fallback also when min_spacing is 0 and length is 0
+        return required_length >= self.trajectory.length
 
     def snap_trip_points(
         self,
@@ -376,10 +512,10 @@ class WGS84TrajectoryTrip:
 
         snapped_points = np.empty_like(self.dists, dtype=object)
         trusted_indices = np.nonzero(self.dists_trusted)[0]
-        if len(trusted_indices) > 0 and self.reverse_order_allowed:
-            raise ValueError(
-                "reverse order allowed not possible with trusted distances"
-            )
+        params = self.snapping_params
+        reverse_order_allowed = (
+            len(trusted_indices) == 0 and params.reverse_order_allowed
+        )
         is_reversed = False
 
         # trusted distances
@@ -394,58 +530,257 @@ class WGS84TrajectoryTrip:
             # if is_reversed is True, the loop has exactly one pass, so we can directly assign
             snapped_points[group_indices], is_reversed = self._snap_untrusted(
                 indices=group_indices,
+                reverse_order_allowed=reverse_order_allowed,
                 convergence_accuracy=convergence_accuracy,
                 n_iter_max=n_iter_max,
             )
 
         return WGS84SnappedTripPoints(snapped_points.tolist(), is_reversed)
 
-    def order_ok(
+    def dists_ok(
         self,
         dists_or_snapped_points: typing.Iterable[
             typing.Union["WGS84SnappedTripPoint", float]
         ],
         d_min: typing.Optional[float] = None,
         d_max: typing.Optional[float] = None,
+        min_spacing: typing.Optional[float] = None,
+        atol: typing.Optional[float] = None,
     ) -> bool:
         if d_min is None:
             d_min = self.trajectory.d_min
         if d_max is None:
             d_max = self.trajectory.d_max
-        return order_ok(
+        return self.snapping_params.dists_ok(
             [
                 item.trajectory_distance
                 if isinstance(item, WGS84SnappedTripPoint)
                 else item
                 for item in dists_or_snapped_points
             ],
-            v_min=d_min,
-            v_max=d_max,
-            d_min=self.min_spacing,
-            atol=self.atol,
+            d_min=d_min,
+            d_max=d_max,
+            min_spacing=min_spacing,
+            atol=atol,
         )
+
+    def _fix_distances(
+        self,
+        missing: np.ndarray,
+        available: np.ndarray,
+        times: np.ndarray,
+    ) -> None:
+        params = self.snapping_params
+
+        if len(self) < 2:
+            raise ValueError("At least two trip points are required")
+
+        # special case: trajectory is too short for snapping all points with min_spacing
+        if self.trajectory_is_too_short:
+            if params.short_trajectory_fallback:
+                # Put everything equidistantly along the whole trajectory.
+                # We ignore the possibility that the trajectory might be reversed
+                # until this case really pops up.
+                logger.info(
+                    "falling back to equidistant placement for trajectory that is too short"
+                )
+                self.dists_trusted.fill(True)
+                self.dists[...] = np.linspace(
+                    self.trajectory.d_min, self.trajectory.d_max, len(self)
+                )
+                return
+            else:
+                raise NoSolution("trajectory is too short, but fallback is disabled")
+
+        # check distances by comparing snapping distance to projection distance
+        # and untrust / discard
+        available_indices = np.nonzero(available)[0]
+        target = ProjectionTarget(self.trajectory.lat_lon)
+        for i in available_indices:
+            snapped_point = WGS84SnappedTripPoint(
+                self, i, self.dists[i], DistanceType.trusted
+            )
+            snapping_distance = snapped_point.get_geodesic_snapping_distance()
+            projection_distance = snapped_point.get_geodesic_projection_distance(target)
+            if not snapped_point.snapping_distance_valid(
+                rtol=params.rtol_keep,
+                atol=params.atol_keep,
+                snapping_distance=snapping_distance,
+                projection_distance=projection_distance,
+            ):
+                logger.debug("discarding distance %d: too far away from trip point", i)
+                self.dists_trusted[i] = False
+                missing[i] = True
+                available[i] = False
+                self.dists[i] = np.nan
+            elif not snapped_point.snapping_distance_valid(
+                rtol=params.rtol_trusted,
+                atol=params.atol_trusted,
+                snapping_distance=snapping_distance,
+                projection_distance=projection_distance,
+            ):
+                logger.debug("distrusting distance %d: too far away from trip point", i)
+                self.dists_trusted[i] = False
+        del available_indices
+
+        # fix range and minimum spacing and discard/distrust if dists moved too far
+        fixed_dists = fix_sequence_with_missing_values(
+            values=self.dists,
+            v_min=self.trajectory.d_min,
+            v_max=self.trajectory.d_max,
+            d_min=params.min_spacing,
+            atol=params.atol_spacing,
+        )
+        keep = np.abs(fixed_dists - self.dists) <= params.max_move_keep
+        discard = np.logical_not(keep)
+        self.dists_trusted &= keep
+        missing |= discard
+        available &= keep
+        fixed_dists[discard] = np.nan
+        still_trusted = np.abs(fixed_dists - self.dists) <= params.max_move_trusted
+        self.dists_trusted &= still_trusted
+        self.dists[...] = fixed_dists
+
+        # Now the finite point dists are all in order and in the correct interval and there is
+        # enough space between them and enough space for the missing dists
+        # and we have at least two unique known dists (including fallback to trajectory boundaries).
+        # This allows us to use the finite dists and times for interpolating the missing distances.
+
+        n_available = available.sum()
+
+        # We assume the trip spans the whole trajectory if we don't know enough distances.
+        # If we know enough distances, but start/end distances are missing, we prefer extrapolating
+        # based on times over this assumption.
+        if n_available < 2:
+            for index, value in (
+                (0, self.trajectory.d_min),
+                (-1, self.trajectory.d_max),
+            ):
+                if missing[index]:
+                    missing[index] = False
+                    available[index] = True
+                    self.dists[index] = value
+                    n_available += 1
+
+        # shortcut if no dists are missing
+        if n_available == len(self):
+            return
+
+        times_available = np.isfinite(times)
+        input_indices = np.nonzero(available & times_available)[0]
+        output_indices = np.nonzero(missing & times_available)[0]
+        if (
+            len(output_indices) != 0
+            and len(input_indices) >= 2
+            # We tolerate zero travel times between stops since this often occurs due to
+            # rounding to full minutes.
+            # We later fix this by forcing min_spacing on the interpolated point distances.
+            # If any travel time is however decreasing, we assume all travel times are garbage,
+            # falling back to equidistant interpolation since there is no obvious way
+            # to fix negative travel times.
+            and np.all(np.diff(times[times_available]) >= 0)
+        ):
+            x = times[input_indices]
+            y = self.dists[input_indices]
+            x, y = fix_repeated_x(x, y)
+            if len(x) >= 2:  # at least two unique times?
+                x_prime = times[output_indices]
+                y_prime = interp1d(
+                    x,
+                    y,
+                    copy=False,
+                    bounds_error=False,
+                    fill_value="extrapolate",
+                    assume_sorted=True,
+                )(x_prime)
+                self.dists[output_indices] = y_prime
+                # dists estimated from travel times could be too close together
+                # or too close to known dists or out of bounds (if extrapolated)
+                self._fix_travel_time_dists(missing)
+                missing[output_indices] = False
+                available[output_indices] = True
+                n_available += len(output_indices)
+
+        # shortcut if all distances could be interpolated by time
+        if n_available == len(self):
+            return
+
+        # Now interpolate the remaining missing dists equidistantly
+        # (i.e. using indices as x values).
+        # In contrast to the time case, we always fix the distances at the boundaries
+        # if they are unknown even if we have 2 or more known points.
+        # (We think assuming that the trip spans the whole trajectory is a better guess than
+        #  assuming that the stops to the left/right of the first/last known stop continue
+        #  with the same spacing.)
+        for index, value in ((0, self.trajectory.d_min), (-1, self.trajectory.d_max)):
+            if missing[index]:
+                missing[index] = False
+                available[index] = True
+                self.dists[index] = value
+                n_available += 1
+
+        # shortcut if fixing the boundaries fixed everything
+        if n_available == len(self):
+            return
+
+        assert n_available >= 2
+        x = np.nonzero(available)[0]
+        y = self.dists[available]
+        x_prime = np.nonzero(missing)[0]
+        y_prime = interp1d(
+            x,
+            y,
+            copy=False,
+            bounds_error=True,
+            assume_sorted=True,
+        )(x_prime)
+        self.dists[missing] = y_prime
+        # last change, don't update available, n_available, missing
+
+    def _fix_travel_time_dists(self, mask: np.ndarray) -> None:
+        min_spacing = self.snapping_params.min_spacing
+        atol = self.snapping_params.atol_spacing
+        d_min = self.trajectory.d_min
+        d_max = self.trajectory.d_max
+        n_points = len(self)
+        indices = np.nonzero(mask)[0]
+        # every group of consecutive indices is an isolated problem
+        for group_indices in iter_consecutive_groups(indices):
+            i_left = group_indices[0] - 1
+            i_right = group_indices[-1] + 1
+            self.dists[group_indices] = fix_sequence_with_missing_values(
+                values=self.dists[group_indices],
+                v_min=self.dists[i_left] + min_spacing if i_left >= 0 else d_min,
+                v_max=self.dists[i_right] - min_spacing
+                if i_right < n_points
+                else d_max,
+                d_min=min_spacing,
+                atol=atol,
+            )
 
     def _snap_untrusted(
         self,
         indices: typing.List[int],
+        reverse_order_allowed: bool,
         convergence_accuracy: float,
         n_iter_max: int,
     ) -> typing.Tuple[typing.List["WGS84SnappedTripPoint"], bool]:
         # calculate free space where we can snap to without getting too close
         # to points with trusted dists
+        params = self.snapping_params
         left = indices[0] - 1
         right = indices[-1] + 1
         if left < 0:
             d_min = self.trajectory.d_min
         else:
-            d_min = self.dists[left] + self.min_spacing
+            d_min = self.dists[left] + params.min_spacing
         if right >= len(self):
             d_max = self.trajectory.d_max
         else:
-            d_max = self.dists[right] - self.min_spacing
+            d_max = self.dists[right] - params.min_spacing
         n_points = len(indices)
         available_length = d_max - d_min
-        required_length = (n_points - 1) * self.min_spacing
+        required_length = (n_points - 1) * params.min_spacing
         if required_length > available_length:
             raise SnappingError("not enough space")
 
@@ -473,11 +808,11 @@ class WGS84TrajectoryTrip:
             for i in indices
         ]
 
-        d_ok = partial(self.order_ok, d_min=d_min, d_max=d_max)
+        d_ok = partial(self.dists_ok, d_min=d_min, d_max=d_max)
         if d_ok(snapped_points):
             logger.debug("projecting in forward direction succesful")
             is_reversed = False
-        elif self.reverse_order_allowed and d_ok(reversed(snapped_points)):
+        elif reverse_order_allowed and d_ok(reversed(snapped_points)):
             logger.debug("projecting in reverse direction succesful")
             is_reversed = True
         else:
@@ -491,7 +826,7 @@ class WGS84TrajectoryTrip:
                 n_iter_max=n_iter_max,
             )
             is_reversed = False
-            if self.reverse_order_allowed:
+            if reverse_order_allowed:
                 # pick forward/backward solution with better sum of squared snapping distances
                 residuum = sum(
                     p.get_geodesic_snapping_distance() ** 2 for p in snapped_points
@@ -508,7 +843,7 @@ class WGS84TrajectoryTrip:
                     p.get_geodesic_snapping_distance() ** 2 for p in alt_snapped_points
                 )
                 if alt_residuum < residuum:
-                    # we reverse later after order_ok check
+                    # we reverse later after dists_ok check
                     is_reversed = True
                     snapped_points = alt_snapped_points
 
@@ -559,6 +894,7 @@ class WGS84TrajectoryTrip:
         If `reverse` is set to `True`, the order of the points is reversed
         and the initial distances are reflected at `(d_min + d_max) / 2` and reversed.
         """
+        params = self.snapping_params
         if reverse:
             indices = indices[::-1]
             point_dists = self.dists[indices]
@@ -566,7 +902,7 @@ class WGS84TrajectoryTrip:
         else:
             point_dists = self.dists[indices]
 
-        if not self.order_ok(point_dists, d_min=d_min, d_max=d_max):
+        if not self.dists_ok(point_dists, d_min=d_min, d_max=d_max):
             raise ValueError("bad initial untrusted point distances")
 
         region_boundaries = np.empty(2 * len(indices))
@@ -585,8 +921,8 @@ class WGS84TrajectoryTrip:
             if n_iter > n_iter_max:
                 raise SnappingError("not converged")
             mid_dists = 0.5 * (point_dists[:-1] + point_dists[1:])
-            region_boundaries[1:-2:2] = mid_dists - 0.5 * self.min_spacing
-            region_boundaries[2:-1:2] = mid_dists + 0.5 * self.min_spacing
+            region_boundaries[1:-2:2] = mid_dists - 0.5 * params.min_spacing
+            region_boundaries[2:-1:2] = mid_dists + 0.5 * params.min_spacing
 
             logger.debug(
                 "n_iter=%d: delta=%.2e point_dists=%s region_boundaries=%s",
@@ -668,11 +1004,27 @@ class WGS84SnappedTripPoint:
             )[2]
         )
 
+    def get_geodesic_projection_distance(
+        self, target: typing.Optional[ProjectionTarget] = None
+    ) -> float:
+        if target is None:
+            target = ProjectionTarget(self.trip.trajectory.lat_lon)
+        source_lat_lon = self.trip.lat_lon[self.index]
+        projected_lat_lon = target.project(source_lat_lon).coords
+        return WGS84_GEOD.inv(
+            lats1=source_lat_lon[0],
+            lons1=source_lat_lon[1],
+            lats2=projected_lat_lon[0],
+            lons2=projected_lat_lon[1],
+        )[2]
+
     def snapping_distance_valid(
         self,
-        rtol: float = 3.0,
-        atol: float = 200.0,
+        rtol: typing.Optional[float] = None,
+        atol: typing.Optional[float] = None,
         target: typing.Optional[ProjectionTarget] = None,
+        snapping_distance: typing.Optional[float] = None,
+        projection_distance: typing.Optional[float] = None,
     ) -> bool:
         """Determine whether the geodesic snapping distance is valid.
 
@@ -681,24 +1033,19 @@ class WGS84SnappedTripPoint:
         The geodesic distance to the trajectory is approximated by the geodesic distance between
         the source point and its eucledian projection onto the trajectory.
 
-        rtol/atol -- Relative/absolute tolerance.
-                     Default means that a snapped point may be 3 times as far away from the
-                     original point than the closest point on the trajectory plus 200 meters.
+        rtol/atol -- See SnappingParams. Default is to use *tol_keep from trip.
         target -- optional pre-computed projection target (for performance optimizations)
         """
-        if target is None:
-            target = ProjectionTarget(self.trip.trajectory.lat_lon)
-        source_lat_lon = self.trip.lat_lon[self.index]
-        projected_lat_lon = target.project(source_lat_lon).coords
-        projected_distance = WGS84_GEOD.inv(
-            lats1=source_lat_lon[0],
-            lons1=source_lat_lon[1],
-            lats2=projected_lat_lon[0],
-            lons2=projected_lat_lon[1],
-        )[2]
-        snapping_distance = self.get_geodesic_snapping_distance()
-        diff = abs(snapping_distance - projected_distance)
-        return diff <= rtol * projected_distance + atol
+        if rtol is None:
+            rtol = self.trip.snapping_params.rtol_keep
+        if atol is None:
+            atol = self.trip.snapping_params.atol_keep
+        if snapping_distance is None:
+            snapping_distance = self.get_geodesic_snapping_distance()
+        if projection_distance is None:
+            projection_distance = self.get_geodesic_projection_distance(target)
+        diff = abs(snapping_distance - projection_distance)
+        return diff <= rtol * projection_distance + atol
 
 
 class WGS84SnappedTripPoints:
@@ -715,7 +1062,9 @@ class WGS84SnappedTripPoints:
         self.snapped_points = list(snapped_points)
         self.dists_descending = dists_descending
 
-    def snapping_distances_valid(self, rtol: float = 3.0, atol: float = 200.0):
+    def snapping_distances_valid(
+        self, rtol: typing.Optional[float] = None, atol: typing.Optional[float] = None
+    ) -> bool:
         """Determine whether all geodesic snapping distances are valid.
 
         See WGS84SnappedTripPoint.snapping_distance_valid for meaning of parameters.
@@ -728,6 +1077,26 @@ class WGS84SnappedTripPoints:
             )
         else:
             return True
+
+    def raise_invalid(
+        self,
+        rtol: typing.Optional[float] = None,
+        atol: typing.Optional[float] = None,
+        debug_geojson_path: typing.Optional[str] = None,
+    ):
+        """Check snapping_distances_valid and raise SnappingError if not valid.
+
+        Includes debug GeoJSON in the error message.
+        """
+        if not self.snapping_distances_valid(rtol=rtol, atol=atol):
+            debug = json.dumps(self.to_geojson(), indent=2)
+            if debug_geojson_path:
+                logger.info("writing debug GeoJSON to %r", debug_geojson_path)
+                with open(debug_geojson_path, "w") as handle:
+                    handle.write(debug)
+            raise SnappingError(
+                f"snapped stop too far away from original stop:\n{debug}\n"
+            )
 
     def get_inter_point_trajectories(self) -> typing.List[WGS84Trajectory]:
         """Split the trajectory at the snapped points.
@@ -776,20 +1145,28 @@ class WGS84SnappedTripPoints:
             transform_coords,
             trafo=pyproj.Transformer.from_crs(WGS84_CRS, GEOJSON_CRS).transform,
         )
-        line_strings = self.get_inter_point_linestrings_in_travel_direction()
-        features = [
+        trajectories = self.get_inter_point_trajectories()
+
+        segments = [
             {
                 "type": "Feature",
-                "geometry": {"type": "LineString", "coordinates": trafo(ls).tolist()},
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": trafo(t.lat_lon).tolist(),
+                },
                 "properties": {
                     "what": "partial trajectory",
                     "from_index": int(self.snapped_points[i].index),
                     "to_index": int(self.snapped_points[i + 1].index),
+                    "from_distance": float(t.dists[0]),
+                    "to_distance": float(t.dists[-1]),
+                    "length": float(t.dists[-1] - t.dists[0]),
                 },
             }
-            for i, ls in enumerate(line_strings)
+            for i, t in enumerate(trajectories)
         ]
-        features.extend(
+
+        snapped_points = [
             {
                 "type": "Feature",
                 "geometry": {
@@ -805,8 +1182,9 @@ class WGS84SnappedTripPoints:
                 },
             }
             for p in self.snapped_points
-        )
-        features.extend(
+        ]
+
+        trip_points = [
             {
                 "type": "Feature",
                 "geometry": {
@@ -821,7 +1199,31 @@ class WGS84SnappedTripPoints:
                 },
             }
             for p in self.snapped_points
-        )
+        ]
+
+        snapping_arrows = [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        tp["geometry"]["coordinates"],
+                        sp["geometry"]["coordinates"],
+                    ],
+                },
+                "properties": {
+                    "what": "snapping arrows",
+                    "index": tp["properties"]["index"],
+                    "snapping_distance": sp["properties"]["snapping_distance"],
+                },
+            }
+            for tp, sp in zip(trip_points, snapped_points)
+        ]
+
+        features = segments
+        features.extend(snapped_points)
+        features.extend(trip_points)
+        features.extend(snapping_arrows)
 
         return {
             "type": "FeatureCollection",
