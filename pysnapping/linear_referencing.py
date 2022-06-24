@@ -25,6 +25,10 @@ class Location(typing.NamedTuple):
             )
 
 
+# TODO (nice to have / performance):
+# * support snapping multiple points at once with another numpy axis
+# * support snapping to substring without actually making the substring
+# * make infinite_head/tail parameters for project (don't fix on the instance)
 class ProjectionTarget:
     """An N-dimensional linestring optimized as a projection target."""
 
@@ -93,12 +97,7 @@ class ProjectionTarget:
 
         This is basically a generalization and optimization of shapely.geometry.LineString.project.
 
-        `line_string_coords` is a sequence of coords (vertex index at axis 0).
         `point_coords` are the coordinates of the point.
-        `infinite_head` and `infinite_tail` control whether
-        first/last segment should be extended to infinity.
-        If enabled, the fraction of the location might be < 0 or > 1
-        `epsilon` is used to identify very short segments.
         """
         if point_coords.ndim != 1:
             raise ValueError("point has to contain exactly 1 axis")
@@ -113,14 +112,18 @@ class ProjectionTarget:
         fractions /= self.norm_segment_dirs_squared
         fractions[self.short_segments] = 0.5
 
-        clip_slice = slice(
-            1 if self.infinite_head else None, -1 if self.infinite_tail else None
-        )
-        clip(fractions[clip_slice], 0.0, 1.0, out=fractions[clip_slice])
-        if self.infinite_head and (len(fractions) > 1 or not self.infinite_tail):
-            fractions[0] = min(fractions[0], 1)
-        if self.infinite_tail and (len(fractions) > 1 or not self.infinite_head):
-            fractions[-1] = max(fractions[-1], 0)
+        if self.infinite_head or self.infinite_tail:
+            clip_slice = slice(
+                1 if self.infinite_head else None, -1 if self.infinite_tail else None
+            )
+            clip(fractions[clip_slice], 0.0, 1.0, out=fractions[clip_slice])
+            if self.infinite_head and (len(fractions) > 1 or not self.infinite_tail):
+                fractions[0] = min(fractions[0], 1)
+            if self.infinite_tail and (len(fractions) > 1 or not self.infinite_head):
+                fractions[-1] = max(fractions[-1], 0)
+        else:
+            # different case just for speedup
+            clip(fractions, 0.0, 1.0, out=fractions)
 
         projected_points = fractions[:, None] * self.segment_dirs
         projected_points += self.segment_starts
