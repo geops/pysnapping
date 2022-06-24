@@ -1113,7 +1113,7 @@ class WGS84SnappedTripPoints:
         as the original trajectory. So if `self.dists_descending` is `True`,
         all sub-trajectories will run from destination point to source point.
         If you only need the coordinates (and not the distances) of the trajectories but oriented
-        in travel direction, use `get_inter_point_linestring_lat_lon_in_travel_direction` instead.
+        in travel direction, use `get_inter_point_ls_lat_lon_in_travel_direction` instead.
         """
         if len(self.snapped_points) < 2:
             raise ValueError("at least two snapped points are required")
@@ -1125,7 +1125,7 @@ class WGS84SnappedTripPoints:
         else:
             return trajectory.split(self.snapped_points)
 
-    def get_inter_point_linestrings_in_travel_direction(
+    def get_inter_point_ls_lat_lon_in_travel_direction(
         self,
     ) -> typing.List[np.ndarray]:
         """Split the trajectory at the snapped points.
