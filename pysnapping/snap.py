@@ -96,7 +96,7 @@ class SnappingParams(typing.NamedTuple):
     rtol_trusted: float = 1.5
     atol_trusted: float = 10.0
     rtol_keep: float = 2.5
-    atol_keep: float = 150.0
+    atol_keep: float = 300.0
     reverse_order_allowed: bool = True
     short_trajectory_fallback: bool = True
 
