@@ -401,9 +401,9 @@ class WGS84TrajectoryTrip:
         if snapping_params.short_trajectory_fallback and self.trajectory_is_too_short:
             if not np.all(self.dists_trusted):
                 raise ValueError(
-                    "all dists need to be trustedd for trajectories that are too short"
+                    "all dists need to be trusted for trajectories that are too short"
                 )
-            if not self.dists_ok(self.dists, min_spacing=0.0, atol=0.0):
+            if not self.dists_ok(self.dists, min_spacing=0.0, atol=1e-3):
                 raise ValueError("bad distances")
         elif not self.dists_ok(self.dists):
             raise ValueError("bad distances")
@@ -463,7 +463,11 @@ class WGS84TrajectoryTrip:
 
         # is our implementation working?
         assert np.all(np.isfinite(self.dists))
-        assert self.dists_ok(self.dists)
+
+        if snapping_params.short_trajectory_fallback and self.trajectory_is_too_short:
+            assert self.dists_ok(self.dists, min_spacing=0.0, atol=1e-3)
+        else:
+            assert self.dists_ok(self.dists)
 
         return self
 
