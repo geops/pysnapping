@@ -215,21 +215,23 @@ def substring(
 
     sub_shape = list(data.shape)
     n_points = last - first + 1 + interpolate_start + interpolate_end
-    assert n_points >= 2
-    sub_shape[axis] = n_points
+    assert n_points >= 1
+    sub_shape[axis] = max(n_points, 2)
     sub_data = np.empty(tuple(sub_shape))
 
     # views have `axis` leftmost for convenient indexing
     sub_data_view = np.moveaxis(sub_data, axis, 0)
     data_view = np.moveaxis(data, axis, 0)
 
-    sub_data_view[int(interpolate_start) : n_points - interpolate_end] = data_view[
+    sub_data_view[int(interpolate_start) : n_points - int(interpolate_end)] = data_view[
         first : last + 1
     ]
     if interpolate_start:
         sub_data_view[0] = interpolate(data_view, start)
     if interpolate_end:
         sub_data_view[-1] = interpolate(data_view, end)
+    if n_points == 1:
+        sub_data_view[1] = sub_data_view[0]
     return sub_data
 
 
