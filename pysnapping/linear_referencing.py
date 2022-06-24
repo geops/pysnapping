@@ -238,31 +238,49 @@ def substring(
     return sub_data
 
 
-def find_location(
-    distances: np.ndarray, distance: float, epsilon: float = 1e-10
-) -> Location:
+def find_location(distances: np.ndarray, distance: float) -> Location:
     """Find location of a distance in a sequence of distances.
 
     `distances` has to be sorted in ascending order (not checked).
-    `distance` is clipped to [`distances[0]`, `distances[-1]`]
-    `epsilon` is used to detect very short segments.
+
+    Location is not extrapolated for distance outside bounds.
+    (maybe we add this feature later optionally)
+
+    If there are repeated consecutive distances, the location
+    will be in the middle.
+
+    Location(i, 0.0) is preferred over Location(i - 1, 1.0)
+    as long as i is a valid segment index.
     """
     check_n_segments(distances)
-    distance = min(max(distance, distances[0]), distances[-1])
-    if distance == distances[0]:
-        return Location(0, 0.0)
-    elif distance == distances[-1]:
-        return Location(len(distances) - 2, 1.0)
-    else:
-        # i2 is the smallest index with distance < distances[i2]
-        i2 = int(np.searchsorted(distances, distance, side="right"))
-        i1 = i2 - 1
-        # since we treated the edge cases separately above, we know that
-        # distances[i1] < distance < distances[i2] and i1 and i2 are inside bounds
-        segment_length = distances[i2] - distances[i1]
-        if segment_length > epsilon:
-            fraction = (distance - distances[i1]) / segment_length
+
+    # find i1 and i2 such that distances[i1] < distance < distances[i2]
+    # with distances[-1] (not in the python sense) := -infinity
+    # and distances[len(distances)] := +infinity
+    i1 = int(np.searchsorted(distances, distance, side="left")) - 1
+    i2 = int(np.searchsorted(distances, distance, side="right"))
+
+    if i1 + 1 == i2:
+        # We are on a segment with non-zero length or out of bounds.
+        # Handle out of bounds and interpolate else.
+        if i1 == -1:
+            return Location(0, 0.0)
+        elif i2 == len(distances):
+            return Location(i2 - 2, 1.0)
         else:
-            fraction = 0.5
-        # not sure if we can end up outside of [0, 1] due to floating point errors, so better clip
-        return Location(i1, fraction).clip()
+            return Location(
+                i1, (distance - distances[i1]) / (distances[i2] - distances[i1])
+            )
+    else:
+        # We exactly hit a distance from distances.
+        # Take the middle segment of all those distances.
+        # If there is an even number of such segments, bias to the right with fraction 0.0.
+        # If we overflow to the right in the even case, back off by one segment and use fraction
+        # 1.0 instead of 0.0.
+        # If there is an odd number of segments, take the middle one with fraction 0.5.
+        segment, mod = divmod(i1 + i2, 2)
+        if segment == len(distances) - 1:
+            # segment does not exist, back off to the left
+            return Location(segment - 1, 1.0)
+        else:
+            return Location(segment, 0.5 * mod)
