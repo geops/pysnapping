@@ -1,6 +1,7 @@
 import sys
 import logging
 import typing
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -13,14 +14,25 @@ from .snap import (
     TrajectoryTrip,
     WGS84Trajectory,
     WGS84TrajectoryTrip,
-    WGS84_CRS,
     SnappingParams,
     DEFAULT_SNAPPING_PARAMS,
 )
 from .interpolate import fix_repeated_x
+from . import EPSG4326
 
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=32)
+def get_trafo(
+    from_crs: pyproj.CRS, always_xy: bool
+) -> typing.Callable[[np.ndarray, np.ndarray], typing.Tuple[np.ndarray, np.ndarray]]:
+    return pyproj.Transformer.from_crs(
+        from_crs,
+        EPSG4326,
+        always_xy=always_xy,
+    ).transform
 
 
 def transform_coords(
@@ -100,20 +112,41 @@ def estimate_geodesic_distances(
     """
     if len(trip) < 2:
         raise ValueError("at least two trip points are required")
-    wgs84_trip_lat_lon_d = np.empty_like(trip.xydt[:, :3])
-    if trip.trajectory.crs != WGS84_CRS:
-        trafo = pyproj.Transformer.from_crs(trip.trajectory.crs, WGS84_CRS).transform
-        traj_lat_lon = transform_coords(trip.trajectory.xy, trafo)
-        transform_coords(trip.xy, trafo, out=wgs84_trip_lat_lon_d[:, :2])
+    wgs84_trip_lon_lat_d = np.empty_like(trip.xydt[:, :3])
+
+    # `is` is way fastern than `==` for CRS and by default, `is` holds
+    if trip.trajectory is EPSG4326 or trip.trajectory.crs == EPSG4326:
+        if trip.trajectory.strict_axis_order:
+            # input is lat,lon
+            traj_lon_lat = trip.trajectory.xy[:, ::-1]
+            wgs84_trip_lon_lat_d[:, :2] = trip.xy[:, ::-1]
+        else:
+            # input is lon,lat
+            traj_lon_lat = trip.trajectory.xy
+            wgs84_trip_lon_lat_d[:, :2] = trip.xy
     else:
-        traj_lat_lon = trip.trajectory.xy
-        wgs84_trip_lat_lon_d[:, :2] = trip.xy
-    wgs84_traj = WGS84Trajectory(traj_lat_lon)
+        trafo = get_trafo(
+            trip.trajectory.crs,
+            not trip.trajectory.strict_axis_order,
+        )
+        if trip.trajectory.strict_axis_order:
+            # trafo output is lat,lon
+            # but we write into views with swapped axis order, so we don't have to copy anything
+            traj_lon_lat = np.empty_like(trip.trajectory.xy)
+            transform_coords(trip.trajectory.xy, trafo, out=traj_lon_lat[:, ::-1])
+            # 1::-1 writes to axes 1 (lat), 0 (lon); axis 2 is untouched (distance)
+            transform_coords(trip.xy, trafo, out=wgs84_trip_lon_lat_d[:, 1::-1])
+        else:
+            # trafo output is lon,lat
+            traj_lon_lat = transform_coords(trip.trajectory.xy, trafo)
+            transform_coords(trip.xy, trafo, out=wgs84_trip_lon_lat_d[:, :2])
+
+    wgs84_traj = WGS84Trajectory(traj_lon_lat)
 
     finite_traj_indices = np.nonzero(np.isfinite(trip.trajectory.dists))[0]
     finite_traj_dists = trip.trajectory.dists[finite_traj_indices]
 
-    wgs84_trip_dists = wgs84_trip_lat_lon_d[:, 2]
+    wgs84_trip_dists = wgs84_trip_lon_lat_d[:, 2]
     if len(finite_traj_dists) >= 1 and np.all(np.diff(finite_traj_dists) >= 0):
         x = finite_traj_dists
         y = wgs84_traj.dists[finite_traj_indices]
@@ -140,7 +173,7 @@ def estimate_geodesic_distances(
     # so let's fix that
     return WGS84TrajectoryTrip.from_invalid_dists_and_times(
         trajectory=wgs84_traj,
-        lat_lon_d=wgs84_trip_lat_lon_d,
+        lon_lat_d=wgs84_trip_lon_lat_d,
         times=trip.times,
         snapping_params=snapping_params,
     )

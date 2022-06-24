@@ -19,27 +19,10 @@ from .linear_referencing import (
 )
 from .util import iter_consecutive_groups
 from .interpolate import fix_repeated_x
-from . import SnappingError, NoSolution
+from . import SnappingError, NoSolution, WGS84_GEOD, EPSG4326
 
 
 logger = logging.getLogger(__name__)
-
-WGS84_GEOD = pyproj.Geod(ellps="WGS84")
-WGS84_CRS = pyproj.CRS.from_epsg(4326)
-
-
-def _get_geojson_crs():
-    # GeoJSON is lon,lat but WGS84 is lat,lon!
-    data = WGS84_CRS.to_json_dict()
-    data["name"] = "GeoJSON"
-    del data["id"]
-    data["coordinate_system"]["axis"] = data["coordinate_system"]["axis"][::-1]
-    assert data["coordinate_system"]["axis"][0]["abbreviation"].lower() == "lon"
-    assert data["coordinate_system"]["axis"][1]["abbreviation"].lower() == "lat"
-    return pyproj.CRS.from_json_dict(data)
-
-
-GEOJSON_CRS = _get_geojson_crs()
 
 
 class SnappingParams(typing.NamedTuple):
@@ -173,16 +156,26 @@ class Trajectory:
 
     Distances are allowed to contain NaNs and they are allowed to decrease.
 
-    The interpretation of the coordinates is given by `crs`.
+    The interpretation of the coordinates is given by `crs` (default: epsg:4326).
+    By default, traditional GIS order is used for the axis order,
+    that is longitude, latitude for geographic CRS and easting, northing for most projected CRS.
+    If you want strict axis order as defined by the CRS, set `strict_axis_order` to True.
     """
 
-    __slots__ = ("crs", "xyd")
+    __slots__ = ("crs", "xyd", "strict_axis_order")
 
     crs: pyproj.CRS
     xyd: np.ndarray
+    strict_axis_order: bool
 
-    def __init__(self, xyd: ArrayLike, crs: pyproj.CRS = WGS84_CRS):
+    def __init__(
+        self,
+        xyd: ArrayLike,
+        crs: pyproj.CRS = EPSG4326,
+        strict_axis_order: bool = False,
+    ):
         self.crs = crs
+        self.strict_axis_order = strict_axis_order
         self.xyd = array_chk(xyd, ((2, None), 3), dtype=float)
         if not np.all(np.isfinite(self.xyd[:, :2])):
             raise ValueError("coords have to be finite")
@@ -270,16 +263,16 @@ class WGS84Trajectory:
     for relating parts of a trajectory to the original trajectory.
     """
 
-    __slots__ = ("lat_lon_d",)
+    __slots__ = ("lon_lat_d",)
 
-    lat_lon_d: np.ndarray
+    lon_lat_d: np.ndarray
 
-    def __init__(self, lat_lon: ArrayLike):
-        lat_lon = array_chk(
-            lat_lon, ((2, None), 2), chk_finite=True, dtype=float, copy=False
+    def __init__(self, lon_lat: ArrayLike):
+        lon_lat = array_chk(
+            lon_lat, ((2, None), 2), chk_finite=True, dtype=float, copy=False
         )
-        self.lat_lon_d = np.empty((len(lat_lon), 3))
-        self.lat_lon[...] = lat_lon
+        self.lon_lat_d = np.empty((len(lon_lat), 3))
+        self.lon_lat[...] = lon_lat
 
         self.dists[0] = 0
         segment_lengths = WGS84_GEOD.inv(
@@ -291,48 +284,48 @@ class WGS84Trajectory:
         np.cumsum(segment_lengths, out=self.dists[1:])
 
     def __len__(self) -> int:
-        return len(self.lat_lon_d)
+        return len(self.lon_lat_d)
 
     @property
     def d_min(self) -> float:
-        return float(self.lat_lon_d[0, 2])
+        return float(self.lon_lat_d[0, 2])
 
     @property
     def d_max(self) -> float:
-        return float(self.lat_lon_d[-1, 2])
+        return float(self.lon_lat_d[-1, 2])
 
     @property
-    def lat_lon(self) -> np.ndarray:
-        return self.lat_lon_d[:, :2]
-
-    @property
-    def lat(self) -> np.ndarray:
-        return self.lat_lon_d[:, 0]
+    def lon_lat(self) -> np.ndarray:
+        return self.lon_lat_d[:, :2]
 
     @property
     def lon(self) -> np.ndarray:
-        return self.lat_lon_d[:, 1]
+        return self.lon_lat_d[:, 0]
+
+    @property
+    def lat(self) -> np.ndarray:
+        return self.lon_lat_d[:, 1]
 
     @property
     def dists(self) -> np.ndarray:
-        return self.lat_lon_d[:, 2]
+        return self.lon_lat_d[:, 2]
 
     @property
     def length(self) -> float:
-        return self.lat_lon_d[-1, 2] - self.lat_lon_d[0, 2]
+        return self.lon_lat_d[-1, 2] - self.lon_lat_d[0, 2]
 
     @classmethod
-    def from_trusted_data(cls, lat_lon_d: ArrayLike, copy: bool = True):
+    def from_trusted_data(cls, lon_lat_d: ArrayLike, copy: bool = True):
         """Create a WGS84Trajectory from existing coordinates and distances.
 
         No checks are performed.
         """
         trajectory = cls.__new__(cls)
-        trajectory.lat_lon_d = np.array(lat_lon_d, dtype=float, copy=copy)
+        trajectory.lon_lat_d = np.array(lon_lat_d, dtype=float, copy=copy)
         return trajectory
 
     def copy(self):
-        return self.__class__.from_trusted_data(self.lat_lon_d)
+        return self.__class__.from_trusted_data(self.lon_lat_d)
 
     def split(
         self, where: typing.Sequence[typing.Union[Location, "WGS84SnappedTripPoint"]]
@@ -349,7 +342,7 @@ class WGS84Trajectory:
         ]
         return [
             self.__class__.from_trusted_data(
-                substring(self.lat_lon_d, locations[i], locations[i + 1])
+                substring(self.lon_lat_d, locations[i], locations[i + 1])
             )
             for i in range(len(locations) - 1)
         ]
@@ -374,27 +367,27 @@ class WGS84TrajectoryTrip:
 
     __slots__ = (
         "trajectory",
-        "lat_lon_d",
+        "lon_lat_d",
         "dists_trusted",
         "snapping_params",
     )
 
     trajectory: WGS84Trajectory
-    lat_lon_d: np.ndarray
+    lon_lat_d: np.ndarray
     dists_trusted: np.ndarray
     snapping_params: SnappingParams
 
     def __init__(
         self,
         trajectory: WGS84Trajectory,
-        lat_lon_d: ArrayLike,
+        lon_lat_d: ArrayLike,
         dists_trusted: ArrayLike,
         snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
     ):
         self.trajectory = trajectory
-        self.lat_lon_d = array_chk(lat_lon_d, (None, 3), chk_finite=True, dtype=float)
+        self.lon_lat_d = array_chk(lon_lat_d, (None, 3), chk_finite=True, dtype=float)
         self.dists_trusted = array_chk(
-            dists_trusted, (len(self.lat_lon_d),), dtype=bool
+            dists_trusted, (len(self.lon_lat_d),), dtype=bool
         )
         self.snapping_params = snapping_params
 
@@ -412,7 +405,7 @@ class WGS84TrajectoryTrip:
     def from_invalid_dists_and_times(
         cls,
         trajectory: WGS84Trajectory,
-        lat_lon_d: ArrayLike,
+        lon_lat_d: ArrayLike,
         times: ArrayLike,
         snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
     ):
@@ -450,8 +443,8 @@ class WGS84TrajectoryTrip:
         """
         self = cls.__new__(cls)
         self.trajectory = trajectory
-        self.lat_lon_d = array_chk(lat_lon_d, (None, 3), dtype=float)
-        if not np.all(np.isfinite(self.lat_lon)):
+        self.lon_lat_d = array_chk(lon_lat_d, (None, 3), dtype=float)
+        if not np.all(np.isfinite(self.lon_lat)):
             raise ValueError("coords have to be finite")
         missing = np.isnan(self.dists)
         available = np.logical_not(missing)
@@ -472,23 +465,23 @@ class WGS84TrajectoryTrip:
         return self
 
     def __len__(self) -> int:
-        return len(self.lat_lon_d)
+        return len(self.lon_lat_d)
 
     @property
-    def lat_lon(self) -> np.ndarray:
-        return self.lat_lon_d[:, :2]
-
-    @property
-    def lat(self) -> np.ndarray:
-        return self.lat_lon_d[:, 0]
+    def lon_lat(self) -> np.ndarray:
+        return self.lon_lat_d[:, :2]
 
     @property
     def lon(self) -> np.ndarray:
-        return self.lat_lon_d[:, 1]
+        return self.lon_lat_d[:, 0]
+
+    @property
+    def lat(self) -> np.ndarray:
+        return self.lon_lat_d[:, 1]
 
     @property
     def dists(self) -> np.ndarray:
-        return self.lat_lon_d[:, 2]
+        return self.lon_lat_d[:, 2]
 
     @property
     def trajectory_is_too_short(self) -> bool:
@@ -599,7 +592,7 @@ class WGS84TrajectoryTrip:
         # check distances by comparing snapping distance to projection distance
         # and untrust / discard
         available_indices = np.nonzero(available)[0]
-        target = ProjectionTarget(self.trajectory.lat_lon)
+        target = ProjectionTarget(self.trajectory.lon_lat)
         for i in available_indices:
             snapped_point = WGS84SnappedTripPoint(
                 self, i, self.dists[i], DistanceType.trusted
@@ -789,22 +782,22 @@ class WGS84TrajectoryTrip:
             raise SnappingError("not enough space")
 
         # the linestring we can snap to without violating d_min / d_max
-        target_lat_lon_d = substring(
-            self.trajectory.lat_lon_d,
+        target_lon_lat_d = substring(
+            self.trajectory.lon_lat_d,
             self.trajectory.locate(d_min),
             self.trajectory.locate(d_max),
         )
 
         # first try just projecting; if this works, we're done
-        target = ProjectionTarget(target_lat_lon_d[:, :2])
+        target = ProjectionTarget(target_lon_lat_d[:, :2])
         snapped_points = [
             WGS84SnappedTripPoint(
                 self,
                 i,
                 float(
                     interpolate(
-                        target_lat_lon_d[:, 2],
-                        target.project(self.lat_lon[i]).location,
+                        target_lon_lat_d[:, 2],
+                        target.project(self.lon_lat[i]).location,
                     )
                 ),
                 DistanceType.projected,
@@ -937,14 +930,14 @@ class WGS84TrajectoryTrip:
             )
             regions = [
                 substring(
-                    self.trajectory.lat_lon_d,
+                    self.trajectory.lon_lat_d,
                     self.trajectory.locate(region_boundaries[i]),
                     self.trajectory.locate(region_boundaries[i + 1]),
                 )
                 for i in range(0, len(region_boundaries) - 1, 2)
             ]
             points_projected_to_regions = [
-                ProjectionTarget(region[:, :2]).project(self.lat_lon[i])
+                ProjectionTarget(region[:, :2]).project(self.lon_lat[i])
                 for i, region in zip(indices, regions)
             ]
             new_point_dists = np.array(
@@ -992,19 +985,19 @@ class WGS84SnappedTripPoint:
     def get_trajectory_location(self) -> Location:
         return find_location(self.trip.trajectory.dists, self.trajectory_distance)
 
-    def get_lat_lon(self) -> np.ndarray:
-        return interpolate(self.trip.trajectory.lat_lon, self.get_trajectory_location())
+    def get_lon_lat(self) -> np.ndarray:
+        return interpolate(self.trip.trajectory.lon_lat, self.get_trajectory_location())
 
     def get_geodesic_snapping_distance(self) -> float:
         """Get the geodesic distance between source and snapped point in meters"""
-        source_lat_lon = self.trip.lat_lon[self.index]
-        snapped_lat_lon = self.get_lat_lon()
+        source_lon_lat = self.trip.lon_lat[self.index]
+        snapped_lon_lat = self.get_lon_lat()
         return float(
             WGS84_GEOD.inv(
-                lats1=source_lat_lon[0],
-                lons1=source_lat_lon[1],
-                lats2=snapped_lat_lon[0],
-                lons2=snapped_lat_lon[1],
+                lons1=source_lon_lat[0],
+                lats1=source_lon_lat[1],
+                lons2=snapped_lon_lat[0],
+                lats2=snapped_lon_lat[1],
             )[2]
         )
 
@@ -1012,14 +1005,14 @@ class WGS84SnappedTripPoint:
         self, target: typing.Optional[ProjectionTarget] = None
     ) -> float:
         if target is None:
-            target = ProjectionTarget(self.trip.trajectory.lat_lon)
-        source_lat_lon = self.trip.lat_lon[self.index]
-        projected_lat_lon = target.project(source_lat_lon).coords
+            target = ProjectionTarget(self.trip.trajectory.lon_lat)
+        source_lon_lat = self.trip.lon_lat[self.index]
+        projected_lon_lat = target.project(source_lon_lat).coords
         return WGS84_GEOD.inv(
-            lats1=source_lat_lon[0],
-            lons1=source_lat_lon[1],
-            lats2=projected_lat_lon[0],
-            lons2=projected_lat_lon[1],
+            lons1=source_lon_lat[0],
+            lats1=source_lon_lat[1],
+            lons2=projected_lon_lat[0],
+            lats2=projected_lon_lat[1],
         )[2]
 
     def snapping_distance_valid(
@@ -1074,7 +1067,7 @@ class WGS84SnappedTripPoints:
         See WGS84SnappedTripPoint.snapping_distance_valid for meaning of parameters.
         """
         if self.snapped_points:
-            target = ProjectionTarget(self.snapped_points[0].trip.trajectory.lat_lon)
+            target = ProjectionTarget(self.snapped_points[0].trip.trajectory.lon_lat)
             return all(
                 p.snapping_distance_valid(rtol=rtol, atol=atol, target=target)
                 for p in self.snapped_points
@@ -1113,7 +1106,7 @@ class WGS84SnappedTripPoints:
         as the original trajectory. So if `self.dists_descending` is `True`,
         all sub-trajectories will run from destination point to source point.
         If you only need the coordinates (and not the distances) of the trajectories but oriented
-        in travel direction, use `get_inter_point_ls_lat_lon_in_travel_direction` instead.
+        in travel direction, use `get_inter_point_ls_lon_lat_in_travel_direction` instead.
         """
         if len(self.snapped_points) < 2:
             raise ValueError("at least two snapped points are required")
@@ -1125,30 +1118,24 @@ class WGS84SnappedTripPoints:
         else:
             return trajectory.split(self.snapped_points)
 
-    def get_inter_point_ls_lat_lon_in_travel_direction(
+    def get_inter_point_ls_lon_lat_in_travel_direction(
         self,
     ) -> typing.List[np.ndarray]:
         """Split the trajectory at the snapped points.
 
-        Return linestring lat,lon coords between consecutive pairs of trip points
+        Return linestring lon,lat coords between consecutive pairs of trip points
         in the same order as in the trip.
         All linestrings are oriented in travel direction of the trip.
         """
         trajectories = self.get_inter_point_trajectories()
 
-        # t.lat_lon is a view into t.lat_lon_d, so we copy to free distance data
+        # t.lon_lat is a view into t.lon_lat_d, so we copy to free distance data
         if self.dists_descending:
-            return [t.lat_lon[::-1].copy() for t in trajectories]
+            return [t.lon_lat[::-1].copy() for t in trajectories]
         else:
-            return [t.lat_lon.copy() for t in trajectories]
+            return [t.lon_lat.copy() for t in trajectories]
 
     def to_geojson(self) -> typing.Dict[str, typing.Any]:
-        from .conversion import transform_coords
-
-        trafo = partial(
-            transform_coords,
-            trafo=pyproj.Transformer.from_crs(WGS84_CRS, GEOJSON_CRS).transform,
-        )
         trajectories = self.get_inter_point_trajectories()
 
         segments = [
@@ -1156,7 +1143,7 @@ class WGS84SnappedTripPoints:
                 "type": "Feature",
                 "geometry": {
                     "type": "LineString",
-                    "coordinates": trafo(t.lat_lon).tolist(),
+                    "coordinates": t.lon_lat.tolist(),
                 },
                 "properties": {
                     "what": "partial trajectory",
@@ -1175,7 +1162,7 @@ class WGS84SnappedTripPoints:
                 "type": "Feature",
                 "geometry": {
                     "type": "Point",
-                    "coordinates": trafo(p.get_lat_lon()).tolist(),
+                    "coordinates": p.get_lon_lat().tolist(),
                 },
                 "properties": {
                     "what": "snapped point",
@@ -1193,7 +1180,7 @@ class WGS84SnappedTripPoints:
                 "type": "Feature",
                 "geometry": {
                     "type": "Point",
-                    "coordinates": trafo(p.trip.lat_lon[p.index]).tolist(),
+                    "coordinates": p.trip.lon_lat[p.index].tolist(),
                 },
                 "properties": {
                     "what": "trip point",
