@@ -238,7 +238,7 @@ def substring(
     return sub_data
 
 
-def find_location(distances: np.ndarray, distance: float) -> Location:
+def locate(distances: np.ndarray, distance: float) -> Location:
     """Find location of a distance in a sequence of distances.
 
     `distances` has to be sorted in ascending order (not checked).

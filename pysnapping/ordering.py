@@ -183,8 +183,7 @@ def fix_sequence_with_missing_values(
             atol=atol,
             **cvxpy_solve_args,
         )
-        solution = np.empty_like(values_arr)
-        solution.fill(np.nan)
+        solution = np.full_like(values_arr, np.nan)
         solution[available_indices] = solution_tilde
 
     return solution

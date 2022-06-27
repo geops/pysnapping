@@ -13,12 +13,18 @@ from .ordering import order_ok, fix_sequence_with_missing_values
 from .linear_referencing import (
     Location,
     substring,
-    find_location,
+    locate,
     interpolate,
     ProjectionTarget,
 )
-from .util import iter_consecutive_groups
-from .interpolate import fix_repeated_x
+from .util import (
+    iter_consecutive_groups,
+    fix_repeated_x,
+    get_trafo,
+    transform_coords,
+    array_chk,
+    simplify_2d_keep_z,
+)
 from . import SnappingError, NoSolution, WGS84_GEOD, EPSG4326
 
 
@@ -107,54 +113,13 @@ class DistanceType(Enum):
     iterative = "iterative"
 
 
-def array_chk(
-    data: ArrayLike,
-    shape_template: typing.Tuple[
-        typing.Union[
-            None, int, typing.Tuple[typing.Optional[int], typing.Optional[int]]
-        ],
-        ...,
-    ],
-    chk_finite: bool = False,
-    **kwargs,
-) -> np.ndarray:
-    arr = np.array(data, **kwargs)
-    temp_axes = len(shape_template)
-    arr_axes = len(arr.shape)
-    if arr_axes != temp_axes:
-        raise ValueError(f"wrong number of axes (expected {temp_axes}, got {arr_axes})")
-    for i, (n, n_expected) in enumerate(zip(arr.shape, shape_template)):
-        if n_expected is None:
-            pass
-        elif isinstance(n_expected, int):
-            if n != n_expected:
-                raise ValueError(
-                    f"axis {i} has wrong length (expected {n_expected}, got {n})"
-                )
-        else:
-            n_min, n_max = n_expected
-            if n_min is not None:
-                if n < n_min:
-                    raise ValueError(
-                        f"axis {i} has wrong length (expected at least {n_expected}, got {n})"
-                    )
-            elif n_max is not None:
-                if n > n_max:
-                    raise ValueError(
-                        f"axis {i} has wrong length (expected at most {n_expected}, got {n})"
-                    )
-    if chk_finite and not np.all(np.isfinite(arr)):
-        raise ValueError("input not finite")
-    return arr
-
-
-class Trajectory:
-    """A line string with optional travel distances for its vertices.
+class DubiousTrajectory:
+    """A linestring with dubious travel distances for its vertices.
 
     The distances are to be interpreted as travel distances along
-    the LineString in an arbitrary unit with arbitrary offset.
+    the linestring in an arbitrary unit with arbitrary offset.
 
-    Distances are allowed to contain NaNs and they are allowed to decrease.
+    Distances are allowed to contain NaNs and they are allowed to decrease (thus "dubious").
 
     The interpretation of the coordinates is given by `crs` (default: epsg:4326).
     By default, traditional GIS order is used for the axis order,
@@ -199,9 +164,16 @@ class Trajectory:
     def dists(self) -> np.ndarray:
         return self.xyd[:, 2]
 
+    def simplify(self, tolerance: float):
+        return type(self)(
+            simplify_2d_keep_z(self.xyd, tolerance),
+            self.crs,
+            self.strict_axis_order,
+        )
 
-class TrajectoryTrip:
-    """A sequence of points along a trajectory with optional distance and time information.
+
+class DubiousTrajectoryTrip:
+    """A sequence of points along a DubiousTrajectory with dubious distance and time information.
 
     The interpretation of the coordinates is given by `trajectory.crs`.
     Points do not have to lie on the trajectory.
@@ -222,10 +194,10 @@ class TrajectoryTrip:
 
     __slots__ = ("trajectory", "xydt")
 
-    trajectory: Trajectory
+    trajectory: DubiousTrajectory
     xydt: np.ndarray
 
-    def __init__(self, trajectory: Trajectory, xydt: ArrayLike):
+    def __init__(self, trajectory: DubiousTrajectory, xydt: ArrayLike):
         self.trajectory = trajectory
         self.xydt = array_chk(xydt, (None, 4), dtype=float)
         if not np.all(np.isfinite(self.xydt[:, :2])):
@@ -254,9 +226,94 @@ class TrajectoryTrip:
     def times(self) -> np.ndarray:
         return self.xydt[:, 3]
 
+    def to_wgs84_trajectory_trip(
+        self,
+        snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
+    ) -> "WGS84TrajectoryTrip":
+        """Convert to a WGS84TrajectoryTrip.
+
+        A DubiousTrajectoryTrip can contain missing/bogus distance data.
+        A WGS84TrajectoryTrip has mandatory, properly ordered geodesic distances
+        (yet they can be an estimation depending on the quality of the input data).
+        A WGS84TrajectoryTrip is suitable for snapping the points to the trajectory.
+
+        All distance related parameters are in meters.
+
+        `snapping_params`: see SnappingParams.
+        """
+        if len(self) < 2:
+            raise ValueError("at least two trip points are required")
+        wgs84_trip_lon_lat_d = np.empty_like(self.xydt[:, :3])
+
+        # `is` is way fastern than `==` for CRS and by default, `is` holds
+        if self.trajectory is EPSG4326 or self.trajectory.crs == EPSG4326:
+            if self.trajectory.strict_axis_order:
+                # input is lat,lon
+                traj_lon_lat = self.trajectory.xy[:, ::-1]
+                wgs84_trip_lon_lat_d[:, :2] = self.xy[:, ::-1]
+            else:
+                # input is lon,lat
+                traj_lon_lat = self.trajectory.xy
+                wgs84_trip_lon_lat_d[:, :2] = self.xy
+        else:
+            trafo = get_trafo(
+                self.trajectory.crs,
+                not self.trajectory.strict_axis_order,
+            )
+            if self.trajectory.strict_axis_order:
+                # trafo output is lat,lon
+                # but we write into views with swapped axis order, so we don't have to copy anything
+                traj_lon_lat = np.empty_like(self.trajectory.xy)
+                transform_coords(self.trajectory.xy, trafo, out=traj_lon_lat[:, ::-1])
+                # 1::-1 writes to axes 1 (lat), 0 (lon); axis 2 is untouched (distance)
+                transform_coords(self.xy, trafo, out=wgs84_trip_lon_lat_d[:, 1::-1])
+            else:
+                # trafo output is lon,lat
+                traj_lon_lat = transform_coords(self.trajectory.xy, trafo)
+                transform_coords(self.xy, trafo, out=wgs84_trip_lon_lat_d[:, :2])
+
+        wgs84_traj = WGS84Trajectory(traj_lon_lat)
+
+        finite_traj_indices = np.nonzero(np.isfinite(self.trajectory.dists))[0]
+        finite_traj_dists = self.trajectory.dists[finite_traj_indices]
+
+        wgs84_trip_dists = wgs84_trip_lon_lat_d[:, 2]
+        if len(finite_traj_dists) >= 1 and np.all(np.diff(finite_traj_dists) >= 0):
+            x = finite_traj_dists
+            y = wgs84_traj.dists[finite_traj_indices]
+            x, y = fix_repeated_x(x, y)
+            # self.dists can contain NaNs and +-inf but interp1d only deals with NaN
+            x_prime = np.nan_to_num(
+                self.dists, nan=np.nan, posinf=np.nan, neginf=np.nan
+            )
+            if len(x) >= 2:
+                wgs84_trip_dists[...] = interp1d(
+                    x,
+                    y,
+                    copy=False,
+                    bounds_error=False,
+                    fill_value="extrapolate",
+                    assume_sorted=True,
+                )(x_prime)
+            else:
+                wgs84_trip_dists.fill(np.nan)
+                wgs84_trip_dists[x_prime == x[0]] = y[0]
+        else:
+            wgs84_trip_dists.fill(np.nan)
+
+        # now we have everything together except that the trip distances might still
+        # be out of range, too close together, too far from the point coords or contain NaNs,
+        # so let's fix that
+        return WGS84TrajectoryTrip.from_dubious_dists_and_times(
+            trajectory=wgs84_traj,
+            lon_lat_d=wgs84_trip_lon_lat_d,
+            times=self.times,
+            snapping_params=snapping_params,
+        )
+
 
 class WGS84Trajectory:
-    """A line string on the WGS84 ellipsoid with geodesic travel distances.
+    """A linestring on the WGS84 ellipsoid with geodesic travel distances.
 
     Distances are the cumulative geodesic distances along the trajectory in meters.
     Distances do not have to start at 0. An arbitrary offset is allowed. This is useful
@@ -348,7 +405,7 @@ class WGS84Trajectory:
         ]
 
     def locate(self, dist: float, **kwargs) -> Location:
-        return find_location(self.dists, dist, **kwargs)
+        return locate(self.dists, dist, **kwargs)
 
 
 class WGS84TrajectoryTrip:
@@ -402,14 +459,14 @@ class WGS84TrajectoryTrip:
             raise ValueError("bad distances")
 
     @classmethod
-    def from_invalid_dists_and_times(
+    def from_dubious_dists_and_times(
         cls,
         trajectory: WGS84Trajectory,
         lon_lat_d: ArrayLike,
         times: ArrayLike,
         snapping_params: SnappingParams = DEFAULT_SNAPPING_PARAMS,
     ):
-        """Initialize from bad distances and times.
+        """Initialize from dubious distances and times.
 
         Estimate missing trip distances and force correct range and minimum spacing.
 
@@ -928,6 +985,9 @@ class WGS84TrajectoryTrip:
                 point_dists,
                 region_boundaries,
             )
+            # TODO (nice to have/performance):
+            # make only one target that supports projecting to regions
+            # without actually extracting the substrings
             regions = [
                 substring(
                     self.trajectory.lon_lat_d,
@@ -983,7 +1043,7 @@ class WGS84SnappedTripPoint:
         self.method = method
 
     def get_trajectory_location(self) -> Location:
-        return find_location(self.trip.trajectory.dists, self.trajectory_distance)
+        return locate(self.trip.trajectory.dists, self.trajectory_distance)
 
     def get_lon_lat(self) -> np.ndarray:
         return interpolate(self.trip.trajectory.lon_lat, self.get_trajectory_location())
@@ -1157,7 +1217,7 @@ class WGS84SnappedTripPoints:
             for i, t in enumerate(trajectories)
         ]
 
-        snapped_points = [
+        snapped_points: typing.List[dict] = [
             {
                 "type": "Feature",
                 "geometry": {
@@ -1175,7 +1235,7 @@ class WGS84SnappedTripPoints:
             for p in self.snapped_points
         ]
 
-        trip_points = [
+        trip_points: typing.List[dict] = [
             {
                 "type": "Feature",
                 "geometry": {
