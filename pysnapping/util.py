@@ -60,16 +60,16 @@ def simplify_2d_keep_z(
 
     # shapely seems to silently loose the z-dimension in simplify
     # if there are NaNs or infs present :(
-    coords = np.array(coords, dtype=float)
-    if len(coords.shape) != 2 or coords.shape[1] != 3:
-        raise ValueError(f"expected 3d LineString coords, got shape {coords.shape}")
-    coords[np.isnan(coords[:, 2]), 2] = fake_nan
+    coords_arr = array_chk(coords, ((2, None), 3), dtype=float)
+    coords_arr[np.isnan(coords_arr[:, 2]), 2] = fake_nan
 
-    if not np.all(np.isfinite(coords[:, 2])):
+    if not np.all(np.isfinite(coords_arr[:, 2])):
         raise ValueError("+-inf not allowed in z dimension")
 
     simple_coords = np.array(
-        LineString(coords).simplify(tolerance=tolerance, preserve_topology=False).coords
+        LineString(coords_arr)
+        .simplify(tolerance=tolerance, preserve_topology=False)
+        .coords
     )
     if simple_coords.shape[1] != 3:
         raise RuntimeError("shapely simplify lost the z dimension")

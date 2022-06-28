@@ -138,10 +138,14 @@ class DubiousTrajectory:
         xyd: ArrayLike,
         crs: pyproj.CRS = EPSG4326,
         strict_axis_order: bool = False,
+        simplify_tolerance: typing.Optional[float] = None,
     ):
         self.crs = crs
         self.strict_axis_order = strict_axis_order
-        self.xyd = array_chk(xyd, ((2, None), 3), dtype=float)
+        if simplify_tolerance is not None:
+            self.xyd = simplify_2d_keep_z(xyd, simplify_tolerance)
+        else:
+            self.xyd = array_chk(xyd, ((2, None), 3), dtype=float)
         if not np.all(np.isfinite(self.xyd[:, :2])):
             raise ValueError("coords have to be finite")
 
@@ -163,13 +167,6 @@ class DubiousTrajectory:
     @property
     def dists(self) -> np.ndarray:
         return self.xyd[:, 2]
-
-    def simplify(self, tolerance: float):
-        return type(self)(
-            simplify_2d_keep_z(self.xyd, tolerance),
-            self.crs,
-            self.strict_axis_order,
-        )
 
 
 class DubiousTrajectoryTrip:
