@@ -1,66 +1,126 @@
 """Linear referencing for arbitrary dimensions.
 
 An alternative to the very limited shapely linear referencing tools.
+Also suitable as an alternative to scipy.interp.interp1d when dealing with repeated x values.
+
+The vertex index axis is always expected at axis 0.
+Consider using np.moveaxis if your data is shaped differently.
+
+This module is rather low-level without sanity checks and conversion of array-like to array.
 """
 
 import typing
+from math import floor
 
 import numpy as np
+
+# faster than np.clip
 from numpy.core.umath import clip  # type: ignore
 
-
-class Location(typing.NamedTuple):
-    """A location along a linear feature"""
-
-    segment: int
-    fraction: float
-
-    def clip(self):
-        if 0 <= self.fraction <= 1:
-            # NamedTuple is immutable, so avoid making a copy if no clipping is needed
-            return self
-        else:
-            return self.__class__(
-                segment=self.segment, fraction=min(max(self.fraction, 0.0), 1.0)
-            )
+from . import ExtrapolationError
 
 
-# TODO (nice to have / performance):
-# * support snapping multiple points at once with another numpy axis
-# * support snapping to substring without actually making the substring
-# * make infinite_head/tail parameters for project (don't fix on the instance)
+class Locations(typing.NamedTuple):
+    """Multiple locations along a linear feature.
+
+    Each location is described by two vertex indices and a fraction.
+    Fraction 0 means at the first vertex. Fraction 1 means at the second vertex.
+    Fraction f with 0 < f < 1 means between vertex1 and vertex2 (linear interpolation).
+    Fraction f with f < 0 or f > 1 describes linear extrapolation.
+
+    Usually to_vertices is from_vertices + 1 but not necessarily.
+    A larger step is e.g. useful if you want to extrapolate with repeated x values,
+    then you can skip segments until the "virtual segment" has a non-zero length.
+    """
+
+    from_vertices: np.ndarray
+    to_vertices: np.ndarray
+    fractions: np.ndarray
+
+    def get_fractional_indices(self):
+        from_vertices = np.array(self.from_vertices, dtype=float)
+        ifrac = np.array(self.to_vertices, dtype=float)
+        ifrac -= from_vertices
+        ifrac *= self.fractions
+        ifrac += from_vertices
+        return ifrac
+
+    def max(self, other):
+        self_wins = self.get_fractional_indices() >= other.get_fractional_indices()
+        return type(self)(
+            np.where(self_wins, self.from_vertices, other.from_vertices),
+            np.where(self_wins, self.to_vertices, other.to_vertices),
+            np.where(self_wins, self.fractions, other.fractions),
+        )
+
+
+def location_to_single_segment(
+    from_vertex: int,
+    to_vertex: int,
+    fraction: float,
+    prefer_zero_fraction: bool,
+    last_segment: int,
+) -> typing.Tuple[int, float]:
+    n_segments = to_vertex - from_vertex
+    if n_segments == 1:
+        segment = from_vertex
+    elif not 0 <= fraction <= 1:
+        raise ExtrapolationError(
+            "cannot convert location extrapolating over multiple segments to single segment"
+        )
+    elif n_segments == 0:
+        segment, fraction = from_vertex, 0.0
+    else:
+        pos = from_vertex + fraction * n_segments
+        segment = floor(pos)
+        # clip away possible floating point errors to stay inside [0, 1]
+        fraction = min(max(pos - segment, 0.0), 1.0)
+
+    if segment == last_segment + 1 and fraction == 0.0:
+        segment = last_segment
+        fraction = 1.0
+
+    if prefer_zero_fraction and segment != last_segment and fraction == 1.0:
+        segment += 1
+        fraction = 0.0
+    if not prefer_zero_fraction and segment != 0 and fraction == 0.0:
+        segment -= 1
+        fraction = 1.0
+    assert 0 <= segment <= last_segment
+    return segment, fraction
+
+
+class ProjectedPoints(typing.NamedTuple):
+    coords: np.ndarray
+    locations: Locations
+    cartesian_distances: np.ndarray
+
+
 class ProjectionTarget:
     """An N-dimensional linestring optimized as a projection target."""
 
     __slots__ = (
         "segment_starts",
         "segment_dirs",
-        "norm_segment_dirs_squared",
+        "inv_norm_segment_dirs_squared",
+        "short_segment_mask",
         "short_segments",
-        "infinite_head",
-        "infinite_tail",
     )
 
     segment_starts: np.ndarray
     segment_dirs: np.ndarray
-    norm_segment_dirs_squared: np.ndarray
+    inv_norm_segment_dirs_squared: np.ndarray
+    short_segment_mask: np.ndarray
     short_segments: np.ndarray
-    infinite_head: bool
-    initite_tail: bool
 
     def __init__(
         self,
         line_string_coords: np.ndarray,
-        infinite_head: bool = False,
-        infinite_tail: bool = False,
         epsilon: float = 1e-10,
     ):
         """Initialize ProjectionTarget.
 
         `line_string_coords` is a sequence of coords (vertex index at axis 0).
-        `infinite_head` and `infinite_tail` control whether
-        first/last segment should be extended to infinity.
-        If enabled, the fraction of the location might be < 0 or > 1 after projecting.
         `epsilon` is used to identify very short segments (for numerical reasons).
 
         Attention: A mixture of views and pre-processed data of `line_string_coords` is
@@ -79,208 +139,416 @@ class ProjectionTarget:
         self.segment_dirs = segment_ends - self.segment_starts
 
         # sum(-1) means sum over last axis
-        self.norm_segment_dirs_squared = (self.segment_dirs**2).sum(-1)
-        short_segment_mask = self.norm_segment_dirs_squared < epsilon**2
-        self.infinite_head = infinite_head
-        self.infinite_tail = infinite_tail
-        if infinite_head and short_segment_mask[0]:
-            raise ValueError("head segment too short, consider using simplify first")
-        if infinite_tail and short_segment_mask[-1]:
-            raise ValueError("tail segment too short, consider using simplify first")
-        # indexing with integers is faster than indexing with a mask for the
-        # common use case of a sparse mask
-        self.short_segments = np.nonzero(short_segment_mask)[0]
-        self.norm_segment_dirs_squared[self.short_segments] = 1.0
+        self.inv_norm_segment_dirs_squared = (self.segment_dirs**2).sum(-1)
+        self.short_segment_mask = self.inv_norm_segment_dirs_squared < epsilon**2
+        self.short_segments = np.nonzero(self.short_segment_mask)[0]
+        # avoid division by zero (will be overwritten later)
+        self.inv_norm_segment_dirs_squared[self.short_segments] = 1.0
+        # in general, multiplication is faster than division,
+        # so we calculate the multiplicative inverse once
+        self.inv_norm_segment_dirs_squared **= -1
 
-    def project(self, point_coords: np.ndarray) -> "ProjectedPoint":
-        """Project a point to the linestring.
+    def get_line_fractions(self, point_coords: np.ndarray) -> "LineFractions":
+        """Project points to infinite lines passing through linestring segments.
+
+        Short segments always get fraction 0.5 (see `epsilon` parameter in constructor).
+        """
+        # many scalar products between segment directions and
+        # point directions to get the fractions for each point/segment combination
+        tmp = point_coords[:, np.newaxis, :] - self.segment_starts[np.newaxis, :, :]
+        tmp *= self.segment_dirs
+        fractions = tmp.sum(-1)
+        fractions *= self.inv_norm_segment_dirs_squared[np.newaxis, :]
+        # self.inv_norm_segment_dirs_squared is arbitrarily set to 1 for short segments.
+        # If a segment is too short for a well defined orientation,
+        # we always assume we are in the middle as stated in the docstring.
+        fractions[:, self.short_segments] = 0.5
+
+        return LineFractions(self, point_coords, fractions)
+
+    def project(
+        self,
+        point_coords: np.ndarray,
+        **kwargs,
+    ) -> ProjectedPoints:
+        """Project points to the linestring.
+
+        This is a convenience method that chains `get_line_fractions` and
+        `LineFractions.project`.
+
+        Note that projecting multiple times with different `kwargs` is faster when calling
+        `get_line_fractions` only once and then calling `LineFractions.project` multiple
+        times.
 
         This is basically a generalization and optimization of shapely.geometry.LineString.project.
 
-        `point_coords` are the coordinates of the point.
+        `point_coords` are the coordinates of the points with vertex index axis at 0.
+        `kwargs` are passed to `LineFractions.project`.
         """
-        if point_coords.ndim != 1:
-            raise ValueError("point has to contain exactly 1 axis")
-        if point_coords.shape != self.segment_starts.shape[1:]:
-            raise ValueError("point and target cartesian dimensions do not match")
+        return self.get_line_fractions(point_coords).project(**kwargs)
 
-        point_dirs = point_coords[None, :] - self.segment_starts
 
-        # many scalar products
-        fractions = (self.segment_dirs * point_dirs).sum(-1)
+# don't use typing.NamedTuple to avoid collision in __getitem__
+class LineFractions:
+    """Fractions of points projected to infinite lines running through each segment of a target."""
 
-        fractions /= self.norm_segment_dirs_squared
-        fractions[self.short_segments] = 0.5
+    __slots__ = ("target", "point_coords", "fractions")
 
-        if self.infinite_head or self.infinite_tail:
-            clip_slice = slice(
-                1 if self.infinite_head else None, -1 if self.infinite_tail else None
+    target: ProjectionTarget
+    point_coords: np.ndarray
+    fractions: np.ndarray
+
+    def __init__(
+        self, target: ProjectionTarget, point_coords: np.ndarray, fractions: np.ndarray
+    ):
+        self.target = target
+        self.point_coords = point_coords
+        self.fractions = fractions
+
+    def __getitem__(self, key):
+        """Get a view or copy using only a subset of points.
+
+        View/copy behavior is like in numpy
+        (copy for fancy indexing with integers or mask; view for slices).
+        `target` is not copied.
+        """
+        if isinstance(key, (int, tuple)):
+            raise KeyError(
+                "indexing is only possible by a single slice, a single mask "
+                "or a single index list/array"
             )
-            clip(fractions[clip_slice], 0.0, 1.0, out=fractions[clip_slice])
-            if self.infinite_head and (len(fractions) > 1 or not self.infinite_tail):
-                fractions[0] = min(fractions[0], 1)
-            if self.infinite_tail and (len(fractions) > 1 or not self.infinite_head):
-                fractions[-1] = max(fractions[-1], 0)
-        else:
-            # different case just for speedup
-            clip(fractions, 0.0, 1.0, out=fractions)
+        return type(self)(
+            target=self.target,
+            point_coords=self.point_coords[key],
+            fractions=self.fractions[key],
+        )
 
-        projected_points = fractions[:, None] * self.segment_dirs
-        projected_points += self.segment_starts
+    def project(
+        self,
+        head_segment: int = 0,
+        head_fraction: float = 0.0,
+        tail_segment: int = -1,
+        tail_fraction: float = 1.0,
+    ) -> ProjectedPoints:
+        """Project points to the linestring or a substring thereof.
+
+        Clip fractions to segments and get ProjectedPoints for best clipped fractions.
+
+        For each point, the projected point with the shortest distance to the point wins.
+        If there are multiple segments with the shortest distance, the segment
+        with the lowest index wins.
+
+        `head_segment/fraction` and `tail_segment/fraction` control the clipping at the start/end.
+        Default corresponds to clipping to the linestring boundaries.
+        Use a negative value for `head_fraction` to allow projecting to an elongated head.
+        `float("-inf")` can be used to simulate an infinite head.
+        You can also use a value greater than 0.0 to shorten the head
+        (useful for projecting to substrings).
+        `head_segment` is the index of the head segment. All segments before `head_segment`
+        are ignored in the minimum search.
+
+        Similar for `tail_segment/fraction`.
+
+        If tail lies before head, the substring to project on will be point-like from head to head
+        and all points will end up there.
+
+        The head/tail segment cannot be short if elongating head/tail (simplify the linestring to
+        ensure this).
+        """
+        if head_fraction < 0.0 and self.target.short_segment_mask[head_segment]:
+            raise ExtrapolationError(
+                "head segment too short to elongate; consider using simplify first"
+            )
+        if tail_fraction > 1.0 and self.target.short_segment_mask[tail_segment]:
+            raise ExtrapolationError(
+                "tail segment too short to elongate; consider using simplify first"
+            )
+
+        # get rid of negative numbers
+        head_segment, tail_segment, _ = slice(head_segment, tail_segment).indices(
+            self.fractions.shape[1]
+        )
+
+        tail_segment, tail_fraction = max(
+            (tail_segment, tail_fraction), (head_segment, head_fraction)
+        )
+
+        # views for the relevant segments (no copies made here)
+        # and we bring everything to all 3 axes
+        segment_slice = slice(head_segment, tail_segment + 1)
+        point_coords = self.point_coords[:, np.newaxis, :]
+        fractions = self.fractions[:, segment_slice, np.newaxis]
+        segment_dirs = self.target.segment_dirs[np.newaxis, segment_slice, :]
+        segment_starts = self.target.segment_starts[np.newaxis, segment_slice, :]
+        del self  # protection against using unsliced data
+
+        low: typing.Union[float, np.ndarray]
+        high: typing.Union[float, np.ndarray]
+        # different cases only for speeding up the default
+        if head_fraction != 0.0:
+            low = np.zeros((1, fractions.shape[1], 1))
+            low[0, 0, 0] = head_fraction
+        else:
+            low = 0.0
+        if tail_fraction != 1.0:
+            high = np.ones((1, fractions.shape[1], 1))
+            high[0, -1, 0] = tail_fraction
+        else:
+            high = 1.0
+
+        fractions = clip(fractions, low, high)
+
+        projected_points = fractions * segment_dirs
+        projected_points += segment_starts
         # ranks are squared cartesian distances (sqrt is monotone, so we get the same minimum
         # as for cartesian distances with less computational effort)
-        tmp = point_coords[None, :] - projected_points
+        tmp = point_coords - projected_points
         tmp *= tmp
-        ranks = tmp.sum(-1)
-        segment = int(np.argmin(ranks))
+        ranks = tmp.sum(2)
+        # index of winning segment for each point
+        segments = np.argmin(ranks, axis=1)
 
-        return ProjectedPoint(
-            projected_points[segment].copy(),
-            Location(segment, float(fractions[segment])),
-            float(ranks[segment] ** 0.5),
+        # We need to explicitly select the points by index.
+        # If we would use `:` for the point axis, we would get a cartesian product
+        # which is not what we want. We want a specific segment for a specific point each.
+        point_indices = np.arange(len(point_coords))
+
+        # take sqrt only for winners to get cartesian distances
+        distances = ranks[point_indices, segments]
+        distances **= 0.5
+        from_vertices = segments + head_segment
+        to_vertices = from_vertices + 1
+        return ProjectedPoints(
+            projected_points[point_indices, segments, :],
+            Locations(
+                from_vertices, to_vertices, fractions[point_indices, segments, 0]
+            ),
+            distances,
+        )
+
+    def project_between_distances(
+        self,
+        d_from: float,
+        d_to: float,
+        distances: np.ndarray,
+        extrapolate: bool = False,
+    ) -> ProjectedPoints:
+        """Convenience method to project between two distances.
+
+        `distances` are the vertex distances of the linestring
+
+        Extrapolation only works if there are no repeated distances
+        (simplify first to achieve this).
+        """
+        locations = locate(
+            d_where=distances,
+            d_what=np.array([d_from, d_to], dtype=float),
+            extrapolate=extrapolate,
+        )
+        last_segment = self.fractions.shape[1] - 1
+        return self.project(
+            *location_to_single_segment(
+                locations.from_vertices[0],
+                locations.to_vertices[0],
+                locations.fractions[0],
+                prefer_zero_fraction=True,
+                last_segment=last_segment,
+            ),
+            *location_to_single_segment(
+                locations.from_vertices[1],
+                locations.to_vertices[1],
+                locations.fractions[1],
+                prefer_zero_fraction=False,
+                last_segment=last_segment,
+            ),
         )
 
 
-class ProjectedPoint(typing.NamedTuple):
-    coords: np.ndarray
-    location: Location
-    cartesian_distance: float
-
-
-def check_n_segments(data: np.ndarray, axis: int = 0) -> None:
-    n_segments = data.shape[axis] - 1
-    if n_segments <= 0:
-        raise ValueError(f"Axis {axis} is too short. At least 2 entries needed.")
-
-
-def interpolate(
-    data: np.ndarray, location: Location, axis: int = 0, extrapolate: bool = False
-) -> np.ndarray:
+def interpolate(data: np.ndarray, locations: Locations) -> np.ndarray:
     """Interpolate data interpreted as a tensor-valued linestring.
 
     This is a generalization of shapely.geometry.LineString.interpolate.
+    For fractions outside [0, 1], extrapolation will happen
+    (clip first if you don't want this).
 
-    `axis` is the vertex index axis.
+    Axis 0 in data has to be the vertex index axis.
     """
-    check_n_segments(data, axis)
-    if not extrapolate:
-        location = location.clip()
+    # from + fraction * (to - from) without unecessary temporary arrays:
+    n_extra_dims = len(data.shape) - 1
+    if n_extra_dims:
+        # numpy broadcasts from right to left but vertex index axis is leftmost
+        # -1 means take all of the remaining space
+        fractions = locations.fractions.reshape((-1,) + (1,) * n_extra_dims)
+    else:
+        fractions = locations.fractions
+    data_from = data[locations.from_vertices]
+    result = data[locations.to_vertices]  # advanced indexing already makes a copy
+    result -= data_from
+    result *= fractions
+    result += data_from
+    return result
 
-    if axis != 0:
-        # a view of data with vertex index axis leftmost for convenience
-        data = np.moveaxis(data, axis, 0)
 
-    f = location.fraction
-    return (1.0 - f) * data[location.segment] + f * data[location.segment + 1]
+def resample(
+    x: np.ndarray, y: np.ndarray, x_prime: np.ndarray, extrapolate: bool = False
+):
+    """Convenience function for locating x_prime on x and interpolating y with those locations.
+
+    This can be used as a replacement for scipy.interpolate.interp1d in the linear case
+    when dealing with repeated x values (which scipy can't).
+
+    NaNs in x_prime will pass through as NaNs in y_prime (the resampled result).
+    """
+    nan_mask = np.isnan(x_prime)
+    nan_indices = np.nonzero(nan_mask)[0]
+    if len(nan_indices):
+        non_nan_indices = np.nonzero(np.logical_not(nan_mask))[0]
+        y_prime_shape = (len(x_prime),) + y.shape[1:]
+        if len(non_nan_indices):
+            y_prime = np.empty(y_prime_shape)
+            y_prime[nan_indices] = np.nan
+            y_prime[non_nan_indices] = interpolate(
+                y, locate(x, x_prime[non_nan_indices], extrapolate)
+            )
+            return y_prime
+        else:
+            return np.full(y_prime_shape, np.nan)
+    else:
+        return interpolate(y, locate(x, x_prime, extrapolate))
 
 
-def substring(
+def substrings(
     data: np.ndarray,
-    start: Location,
-    end: Location,
-    axis: int = 0,
-) -> np.ndarray:
-    """Extract a substring copy of data interpeted as a tensor-valued linestring.
+    starts: Locations,
+    ends: Locations,
+) -> typing.List[np.ndarray]:
+    """Extract substring copies of data interpeted as a tensor-valued linestring.
 
     This is a generalization of shapely.ops.substring.
-    In contrast to shapely, two identical points are returned for a zero-length substring
-    and the selection of the substring extent is different.
-    Start and end fractions are clipped to [0, 1] (extrapolation is not implemented yet).
-    If end lies before start, a zero length substring from start to start is returned.
-    Start/end points are interpolated linearly.
+    In contrast to shapely, two identical points are returned for a zero-length substring,
+    the selection of the substring extent is different and many substrings are processed
+    in one call.
 
-    `axis` is the vertex index axis.
+    If an end lies before the corresponding start, a zero length substring from start to start
+    is returned. Start/end points are interpolated/extrapolated linearly.
+    If you don't want extrapolation, clip first.
     """
-    check_n_segments(data, axis)
-    start = start.clip()
-    end = end.clip()
-    end = max(start, end)
+    # don't go in reverse direction
+    ends = ends.max(starts)
 
-    if start.fraction == 0.0:
-        interpolate_start = False
-        first = start.segment
-    elif start.fraction == 1.0:
-        interpolate_start = False
-        first = start.segment + 1
-    else:
-        interpolate_start = True
-        first = start.segment + 1
+    # the first indices that are not covered by start interpolation/extrapolation
+    frac_start = starts.get_fractional_indices()
+    frac_start_ceil = np.ceil(frac_start)
+    first = frac_start_ceil.astype(int)
+    first[frac_start == frac_start_ceil] += 1
+    clip(first, starts.from_vertices, starts.to_vertices + 1, out=first)
 
-    if end.fraction == 0.0:
-        interpolate_end = False
-        last = end.segment
-    elif end.fraction == 1.0:
-        interpolate_end = False
-        last = end.segment + 1
-    else:
-        interpolate_end = True
-        last = end.segment
+    # the last indices that are not convered by end interpolation/extrapolation
+    frac_end = ends.get_fractional_indices()
+    frac_end_floor = np.floor(frac_end)
+    last = frac_end_floor.astype(int)
+    last[frac_end == frac_end_floor] -= 1
+    clip(last, ends.from_vertices - 1, ends.to_vertices, out=last)
 
-    sub_shape = list(data.shape)
-    n_points = last - first + 1 + interpolate_start + interpolate_end
-    assert n_points >= 1
-    sub_shape[axis] = max(n_points, 2)
-    sub_data = np.empty(tuple(sub_shape))
+    data_length = len(data)
+    start_data = interpolate(data, starts)
+    end_data = interpolate(data, ends)
+    substrings = []
+    for fi, sdata, edata, la in zip(first, start_data, end_data, last):
+        sli = slice(fi, la + 1)
+        n_points = len(range(*sli.indices(data_length))) + 2
+        sub_shape = (n_points,) + data.shape[1:]
+        substring = np.empty(sub_shape)
+        substring[0] = sdata
+        substring[1:-1] = data[sli]
+        substring[-1] = edata
+        substrings.append(substring)
 
-    # views have `axis` leftmost for convenient indexing
-    sub_data_view = np.moveaxis(sub_data, axis, 0)
-    data_view = np.moveaxis(data, axis, 0)
-
-    sub_data_view[int(interpolate_start) : n_points - int(interpolate_end)] = data_view[
-        first : last + 1
-    ]
-    if interpolate_start:
-        sub_data_view[0] = interpolate(data_view, start)
-    if interpolate_end:
-        sub_data_view[-1] = interpolate(data_view, end)
-    if n_points == 1:
-        sub_data_view[1] = sub_data_view[0]
-    return sub_data
+    return substrings
 
 
-def locate(distances: np.ndarray, distance: float) -> Location:
-    """Find location of a distance in a sequence of distances.
+def locate(
+    d_where: np.ndarray, d_what: np.ndarray, extrapolate: bool = False
+) -> Locations:
+    """Find locations of distances in a sequence of distances.
 
-    `distances` has to be sorted in ascending order (not checked).
+    `d_where` has to be sorted in ascending order (not checked).
 
-    Location is not extrapolated for distance outside bounds.
-    (maybe we add this feature later optionally)
+    If an item of d_what exactly hits an item of d_where, the according location
+    will be at fraction 0.5 of the virtual segment spanning all the occurences in d_where.
+    E.g. if d_where is [1, 2, 3] and d_what is [2], location will be from 1 to 1 with fraction 0.5.
+    And if d_where is [1, 2, 2, 3] and d_what is [2], location will be from 1 to 2
+    with fraction 0.5.
 
-    If there are repeated consecutive distances, the location
-    will be in the middle.
+    If `extrapolate` is set to `True` and an item `j` of `d_what` is smaller than any value of
+    `d_where`, the location will go from 0 to i with `d_where[i] > `d_what[j]` with
+    a negative fraction. If that is not possible, `ExtrapolationError` is raised.
+    Similarly for extrapolating at the other end (then fraction is > 1).
 
-    Location(i, 0.0) is preferred over Location(i - 1, 1.0)
-    as long as i is a valid segment index.
+    If `extrapolate` is set to `False` (default), the locations will be clipped at
+    from/to fraction 0 and from/to last fraction 1.
     """
-    check_n_segments(distances)
+    # d_where is sorted
+    d_min = d_where[0]
+    d_max = d_where[-1]
 
-    # find i1 and i2 such that distances[i1] < distance < distances[i2]
-    # with distances[-1] (not in the python sense) := -infinity
-    # and distances[len(distances)] := +infinity
-    i1 = int(np.searchsorted(distances, distance, side="left")) - 1
-    i2 = int(np.searchsorted(distances, distance, side="right"))
+    from_vertices = np.searchsorted(d_where, d_what, side="left")
+    to_vertices = np.searchsorted(d_where, d_what, side="right") - 1
+    on_segment = from_vertices > to_vertices
+    on_segment_indices = np.nonzero(on_segment)[0]
+    # advanced indexing makes a copy, so this swap works
+    from_vertices[on_segment_indices], to_vertices[on_segment_indices] = (
+        to_vertices[on_segment_indices],
+        from_vertices[on_segment_indices],
+    )
 
-    if i1 + 1 == i2:
-        # We are on a segment with non-zero length or out of bounds.
-        # Handle out of bounds and interpolate else.
-        if i1 == -1:
-            return Location(0, 0.0)
-        elif i2 == len(distances):
-            return Location(i2 - 2, 1.0)
-        else:
-            return Location(
-                i1, (distance - distances[i1]) / (distances[i2] - distances[i1])
-            )
-    else:
-        # We exactly hit a distance from distances.
-        # Take the middle segment of all those distances.
-        # If there is an even number of such segments, bias to the right with fraction 0.0.
-        # If we overflow to the right in the even case, back off by one segment and use fraction
-        # 1.0 instead of 0.0.
-        # If there is an odd number of segments, take the middle one with fraction 0.5.
-        segment, mod = divmod(i1 + i2, 2)
-        if segment == len(distances) - 1:
-            # segment does not exist, back off to the left
-            return Location(segment - 1, 1.0)
-        else:
-            return Location(segment, 0.5 * mod)
+    fractions = np.full_like(d_what, 0.5, dtype=float)
+    if len(on_segment_indices):
+        recalculate_on_segment_indices = False
+        underflow_indices = np.nonzero(from_vertices == -1)[0]
+        if len(underflow_indices):
+            from_vertices[underflow_indices] = 0
+            if extrapolate:
+                to_vertex = np.searchsorted(d_where, d_min, side="right")
+                if to_vertex == len(d_where):
+                    raise ExtrapolationError(
+                        "cannot extrapolate when all distances are the same"
+                    )
+                to_vertices[underflow_indices] = to_vertex
+            else:
+                fractions[underflow_indices] = 0.0
+                on_segment[underflow_indices] = False
+                recalculate_on_segment_indices = True
+        overflow_indices = np.nonzero(to_vertices == len(d_where))[0]
+        if len(overflow_indices):
+            to_vertices[overflow_indices] = len(d_where) - 1
+            if extrapolate:
+                from_vertex = np.searchsorted(d_where, d_max, side="left") - 1
+                if from_vertex == -1:
+                    raise ExtrapolationError(
+                        "cannot extrapolate when all distances are the same"
+                    )
+                from_vertices[overflow_indices] = from_vertex
+            else:
+                fractions[overflow_indices] = 1.0
+                on_segment[overflow_indices] = False
+                recalculate_on_segment_indices = True
+
+        if recalculate_on_segment_indices:
+            on_segment_indices = np.nonzero(on_segment)[0]
+
+        if len(on_segment_indices):
+            # advanced indexing makes a copy
+            segment_fractions = d_what[on_segment_indices]
+            if len(on_segment_indices) < len(d_where):
+                filtered_from_vertices = from_vertices[on_segment_indices]
+                filtered_to_vertices = to_vertices[on_segment_indices]
+            else:
+                # avoid copy
+                filtered_from_vertices = from_vertices
+                filtered_to_vertices = to_vertices
+            d_where_from = d_where[filtered_from_vertices]
+            segment_fractions -= d_where_from
+            segment_fractions /= d_where[filtered_to_vertices] - d_where_from
+            fractions[on_segment_indices] = segment_fractions
+    return Locations(from_vertices, to_vertices, fractions)

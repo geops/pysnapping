@@ -10,3 +10,7 @@ class SnappingError(ValueError):
 
 class NoSolution(ValueError):
     pass
+
+
+class ExtrapolationError(ValueError):
+    pass

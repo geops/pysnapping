@@ -18,7 +18,6 @@ setup(
     install_requires=[
         "shapely",
         "numpy",
-        "scipy",
         "pyproj>=3.2.0",  # for defining custom CRS
         "cvxpy",
     ],
