@@ -20,7 +20,7 @@ from numpy.core.umath import clip  # type: ignore
 from . import ExtrapolationError
 
 
-class Locations(typing.NamedTuple):
+class Locations:
     """Multiple locations along a linear feature.
 
     Each location is described by two vertex indices and a fraction.
@@ -33,9 +33,52 @@ class Locations(typing.NamedTuple):
     then you can skip segments until the "virtual segment" has a non-zero length.
     """
 
+    __slots__ = ("from_vertices", "to_vertices", "fractions")
+
     from_vertices: np.ndarray
     to_vertices: np.ndarray
     fractions: np.ndarray
+
+    def __init__(
+        self, from_vertices: np.ndarray, to_vertices: np.ndarray, fractions: np.ndarray
+    ):
+        self.from_vertices = from_vertices
+        self.to_vertices = to_vertices
+        self.fractions = fractions
+
+    def __getitem__(self, key):
+        """Get a view or copy using only a subset of locations.
+
+        View/copy behavior is like in numpy
+        (copy for fancy indexing with integers or mask; view for slices).
+        """
+        if isinstance(key, (int, tuple)):
+            raise KeyError(
+                "indexing is only possible by a single slice, a single mask "
+                "or a single index list/array"
+            )
+        return type(self)(
+            from_vertices=self.from_vertices[key],
+            to_vertices=self.to_vertices[key],
+            fractions=self.fractions[key],
+        )
+
+    def __setitem__(self, key, item):
+        self.from_vertices[key] = item.from_vertices
+        self.to_vertices[key] = item.to_vertices
+        self.fractions[key] = item.fractions
+
+    def __len__(self) -> int:
+        return len(self.from_vertices)
+
+    @classmethod
+    def empty(cls, n: int):
+        shape = (n,)
+        return cls(
+            np.empty(shape, dtype=int),
+            np.empty(shape, dtype=int),
+            np.empty(shape),
+        )
 
     def get_fractional_indices(self):
         from_vertices = np.array(self.from_vertices, dtype=float)
@@ -90,10 +133,52 @@ def location_to_single_segment(
     return segment, fraction
 
 
-class ProjectedPoints(typing.NamedTuple):
+class ProjectedPoints:
+    __slots__ = ("coords", "locations", "cartesian_distances")
+
     coords: np.ndarray
     locations: Locations
     cartesian_distances: np.ndarray
+
+    def __init__(
+        self, coords: np.ndarray, locations: Locations, cartesian_distances: np.ndarray
+    ):
+        self.coords = coords
+        self.locations = locations
+        self.cartesian_distances = cartesian_distances
+
+    def __len__(self) -> int:
+        return len(self.coords)
+
+    def __getitem__(self, key):
+        """Get a view or copy using only a subset of the points.
+
+        View/copy behavior is like in numpy
+        (copy for fancy indexing with integers or mask; view for slices).
+        """
+        if isinstance(key, (int, tuple)):
+            raise KeyError(
+                "indexing is only possible by a single slice, a single mask "
+                "or a single index list/array"
+            )
+        return type(self)(
+            coords=self.coords[key],
+            locations=self.locations[key],
+            cartesian_distances=self.cartesian_distances[key],
+        )
+
+    def __setitem__(self, key, item):
+        self.coords[key] = item.coords
+        self.locations[key] = item.locations
+        self.cartesian_distances[key] = item.cartesian_distances
+
+    @classmethod
+    def empty(cls, n_points: int, n_cartesian: int):
+        return cls(
+            np.empty((n_points, n_cartesian)),
+            Locations.empty(n_points),
+            np.empty((n_points,)),
+        )
 
 
 class ProjectionTarget:
@@ -188,7 +273,6 @@ class ProjectionTarget:
         return self.get_line_fractions(point_coords).project(**kwargs)
 
 
-# don't use typing.NamedTuple to avoid collision in __getitem__
 class LineFractions:
     """Fractions of points projected to infinite lines running through each segment of a target."""
 
@@ -229,6 +313,7 @@ class LineFractions:
         head_fraction: float = 0.0,
         tail_segment: int = -1,
         tail_fraction: float = 1.0,
+        out: typing.Optional[ProjectedPoints] = None,
     ) -> ProjectedPoints:
         """Project points to the linestring or a substring thereof.
 
@@ -318,13 +403,21 @@ class LineFractions:
         distances **= 0.5
         from_vertices = segments + head_segment
         to_vertices = from_vertices + 1
-        return ProjectedPoints(
-            projected_points[point_indices, segments, :],
-            Locations(
-                from_vertices, to_vertices, fractions[point_indices, segments, 0]
-            ),
-            distances,
-        )
+        if out is None:
+            return ProjectedPoints(
+                projected_points[point_indices, segments, :],
+                Locations(
+                    from_vertices, to_vertices, fractions[point_indices, segments, 0]
+                ),
+                distances,
+            )
+        else:
+            out.coords[...] = projected_points[point_indices, segments, :]
+            out.locations.from_vertices[...] = from_vertices
+            out.locations.to_vertices[...] = to_vertices
+            out.locations.fractions[...] = fractions[point_indices, segments, 0]
+            out.cartesian_distances[...] = distances
+            return out
 
     def project_between_distances(
         self,
@@ -332,6 +425,7 @@ class LineFractions:
         d_to: float,
         distances: np.ndarray,
         extrapolate: bool = False,
+        out: typing.Optional[ProjectedPoints] = None,
     ) -> ProjectedPoints:
         """Convenience method to project between two distances.
 
@@ -361,6 +455,7 @@ class LineFractions:
                 prefer_zero_fraction=False,
                 last_segment=last_segment,
             ),
+            out,
         )
 
 
@@ -487,6 +582,9 @@ def locate(
 
     If `extrapolate` is set to `False` (default), the locations will be clipped at
     from/to fraction 0 and from/to last fraction 1.
+
+    Attention: NaNs are sorted in at the end by numpy, so be careful to do your own filtering
+    on NaNs in `d_what` (you will get a finite but probably meaningless result).
     """
     # d_where is sorted
     d_min = d_where[0]
@@ -540,7 +638,7 @@ def locate(
         if len(on_segment_indices):
             # advanced indexing makes a copy
             segment_fractions = d_what[on_segment_indices]
-            if len(on_segment_indices) < len(d_where):
+            if len(on_segment_indices) < len(d_what):
                 filtered_from_vertices = from_vertices[on_segment_indices]
                 filtered_to_vertices = to_vertices[on_segment_indices]
             else:

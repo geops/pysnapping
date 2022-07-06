@@ -1,6 +1,5 @@
 import typing
 import itertools
-import sys
 import logging
 from functools import lru_cache
 
@@ -9,7 +8,7 @@ from numpy.typing import ArrayLike
 from shapely.geometry import LineString
 import pyproj
 
-from . import EPSG4326
+from . import EPSG4978
 
 
 logger = logging.getLogger(__name__)
@@ -17,65 +16,72 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=32)
 def get_trafo(
-    from_crs: pyproj.CRS, always_xy: bool
-) -> typing.Callable[[np.ndarray, np.ndarray], typing.Tuple[np.ndarray, np.ndarray]]:
+    from_crs: pyproj.CRS, to_crs: pyproj.CRS = EPSG4978, strict_axis_order: bool = False
+) -> typing.Callable[
+    [np.ndarray, np.ndarray, np.ndarray],
+    typing.Tuple[np.ndarray, np.ndarray, np.ndarray],
+]:
     return pyproj.Transformer.from_crs(
         from_crs,
-        EPSG4326,
-        always_xy=always_xy,
+        to_crs,
+        always_xy=not strict_axis_order,
     ).transform
 
 
 def transform_coords(
     coords: ArrayLike,
     trafo: typing.Callable[
-        [np.ndarray, np.ndarray], typing.Tuple[np.ndarray, np.ndarray]
+        [np.ndarray, np.ndarray, np.ndarray],
+        typing.Tuple[np.ndarray, np.ndarray, np.ndarray],
     ],
     out: typing.Optional[np.ndarray] = None,
+    skip_z_output: bool = False,
 ) -> np.ndarray:
     coords_arr = np.asarray(coords, dtype=float)
-    if coords_arr.shape[-1] != 2:
-        raise ValueError("last axis has to be of length 2")
+    if coords_arr.shape[-1] != 3:
+        raise ValueError("last axis has to be of length 3")
     if out is None:
-        out = np.empty_like(coords_arr)
-    out[..., 0], out[..., 1] = trafo(coords_arr[..., 0], coords_arr[..., 1])
+        if skip_z_output:
+            out = np.empty(coords_arr.shape[:-1] + (2,))
+        else:
+            out = np.empty_like(coords_arr)
+    if skip_z_output:
+        out[..., 0], out[..., 1], _ = trafo(
+            coords_arr[..., 0], coords_arr[..., 1], coords_arr[..., 2]
+        )
+    else:
+        out[..., 0], out[..., 1], out[..., 2] = trafo(
+            coords_arr[..., 0], coords_arr[..., 1], coords_arr[..., 2]
+        )
     return out
 
 
-def simplify_2d_keep_z(
-    coords: ArrayLike, tolerance, fake_nan=sys.float_info.max
-) -> np.ndarray:
-    """Simplify line string coords using Ramer-Douglas-Peucker algorithm.
+def simplify_2d_keep_rest(coords: ArrayLike, tolerance) -> np.ndarray:
+    """Simplify in first two dimensions of linestring coords using Ramer-Douglas-Peucker algorithm.
 
-    The z-dimension is not considered but it is kept intact for points which
-    were not removed. Also deals correctly with NaNs in the z-dimension.
-    +-inf is not allowed in the z-dimension.
-
-    `fake_nan` is an arbitrary finite floating point number that should not
-    occur in the z-dimension values.
+    The other dimensions are not considered but they are kept intact for points which
+    were not removed.
     """
     # TODO (nice to have): this is the only part in the project, where we depend on shapely.
     # Maybe we could implement our own variant of Ramer-Douglas-Peucker algorithm without
-    # this ugly hack to get rid of shapely.
+    # this ugly hack to get rid of shapely and to support 3d.
 
-    # shapely seems to silently loose the z-dimension in simplify
-    # if there are NaNs or infs present :(
-    coords_arr = array_chk(coords, ((2, None), 3), dtype=float)
-    coords_arr[np.isnan(coords_arr[:, 2]), 2] = fake_nan
+    coords_arr = array_chk(coords, ((2, None), (2, None)), dtype=float)
 
-    if not np.all(np.isfinite(coords_arr[:, 2])):
-        raise ValueError("+-inf not allowed in z dimension")
+    # shapely ignores the third dimension but keeps it intact as long as it is finite everywhere
+    # so we can sneak in indices there (as floats)
+    shapely_input = np.empty((coords_arr.shape[0], 3))
+    shapely_input[:, :2] = coords_arr[:, :2]
+    shapely_input[:, 2] = np.arange(coords_arr.shape[0])
 
-    simple_coords = np.array(
-        LineString(coords_arr)
+    shapely_output = np.array(
+        LineString(shapely_input)
         .simplify(tolerance=tolerance, preserve_topology=False)
         .coords
     )
-    if simple_coords.shape[1] != 3:
+    if shapely_output.shape[1] != 3:
         raise RuntimeError("shapely simplify lost the z dimension")
-
-    simple_coords[simple_coords[:, 2] == fake_nan, 2] = np.nan
-    return simple_coords
+    return coords_arr[shapely_output[:, 2].astype(int)]
 
 
 def iter_consecutive_groups(
