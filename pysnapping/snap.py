@@ -596,9 +596,10 @@ class TrajectoryTrip(XYZDMixin):
         # every group of consecutive points with untrusted distances is an isolated problem
         untrusted_indices = np.nonzero(np.logical_not(self.dists_trusted))[0]
         for group_indices in iter_consecutive_groups(untrusted_indices):
+            group_slice = slice(group_indices[0], group_indices[-1] + 1)
             self._snap_untrusted(
                 snapped_trip_points,  # will be modified inplace
-                indices=group_indices,
+                group_slice=group_slice,
                 reverse_order_allowed=reverse_order_allowed,
                 convergence_accuracy=convergence_accuracy,
                 n_iter_max=n_iter_max,
@@ -812,16 +813,18 @@ class TrajectoryTrip(XYZDMixin):
     def _snap_untrusted(
         self,
         snapped_trip_points: "SnappedTripPoints",  # modified inplace
-        indices: typing.List[int],
+        group_slice: slice,
         reverse_order_allowed: bool,
         convergence_accuracy: float,
         n_iter_max: int,
     ) -> None:
         # calculate free space where we can snap to without getting too close
         # to points with trusted dists
+        assert group_slice.start >= 0
+        assert group_slice.stop > group_slice.start
         params = self.snapping_params
-        left = indices[0] - 1
-        right = indices[-1] + 1
+        left = group_slice.start - 1
+        right = group_slice.stop
         if left < 0:
             d_min = self.trajectory.d_min
         else:
@@ -830,14 +833,14 @@ class TrajectoryTrip(XYZDMixin):
             d_max = self.trajectory.d_max
         else:
             d_max = self.dists[right] - params.min_spacing
-        n_points = len(indices)
+        n_points = group_slice.stop - group_slice.start
         available_length = d_max - d_min
         required_length = (n_points - 1) * params.min_spacing
         if required_length > available_length:
             raise SnappingError("not enough space")
 
         # first try just projecting; if this works, we're done
-        snapped_points = self.line_fractions.project_between_distances(
+        snapped_points = self.line_fractions[group_slice].project_between_distances(
             d_min, d_max, self.trajectory.dists
         )
         distances = interpolate(self.trajectory.dists, snapped_points.locations)
@@ -854,7 +857,7 @@ class TrajectoryTrip(XYZDMixin):
             logger.debug("projected solution not admissible")
             method = SnappingMethod.iterative
             snapped_points, distances = self._snap_untrusted_iteratively(
-                indices=indices,
+                group_slice=group_slice,
                 d_min=d_min,
                 d_max=d_max,
                 reverse=False,
@@ -866,7 +869,7 @@ class TrajectoryTrip(XYZDMixin):
                 # pick forward/backward solution with better sum of squared snapping distances
                 residuum = (snapped_points.cartesian_distances**2).sum()
                 alt_snapped_points, alt_distances = self._snap_untrusted_iteratively(
-                    indices=indices,
+                    group_slice=group_slice,
                     d_min=d_min,
                     d_max=d_max,
                     reverse=True,
@@ -882,13 +885,13 @@ class TrajectoryTrip(XYZDMixin):
                     snapped_points = alt_snapped_points
                     distances = alt_distances
 
-        snapped_trip_points.distances[indices] = distances
-        snapped_trip_points.snapped_points[indices] = snapped_points
-        snapped_trip_points.methods[indices] = method
+        snapped_trip_points.distances[group_slice] = distances
+        snapped_trip_points.snapped_points[group_slice] = snapped_points
+        snapped_trip_points.methods[group_slice] = method
 
     def _snap_untrusted_iteratively(
         self,
-        indices: typing.List[int],
+        group_slice: slice,
         d_min: float,
         d_max: float,
         reverse: bool,
@@ -926,28 +929,41 @@ class TrajectoryTrip(XYZDMixin):
         If `reverse` is set to `True`, the order of the points is reversed internally
         and the initial distances are reflected at `(d_min + d_max) / 2` and reversed.
 
-        The order of the output is always consistent with the order of `indices` (not reversed).
+        The order of the output is always consistent with the order of `group_slice` (not reversed).
         """
-        params = self.snapping_params
-        n_points = len(indices)
+        assert group_slice.start >= 0
+        assert group_slice.stop > group_slice.start
+        half_min_spacing = 0.5 * self.snapping_params.min_spacing
+        n_points = group_slice.stop - group_slice.start
+        snapped_points = ProjectedPoints.empty(n_points, 3)
         if reverse:
-            indices = indices[::-1]
-            distances = self.dists[indices]
+            group_slice = slice(
+                group_slice.stop - 1,
+                group_slice.start - 1 if group_slice.start > 0 else None,
+                -1,
+            )
+            distances = self.dists[group_slice]
             distances = (d_min + d_max) - distances
+            # a view of snapped_points consistent with increasing distance order
+            sp_view = snapped_points[::-1]
         else:
-            distances = self.dists[indices]
+            distances = self.dists[group_slice]
+            sp_view = snapped_points
 
         if not self.dists_ok(distances, d_min=d_min, d_max=d_max):
             raise ValueError("bad initial untrusted point distances")
 
-        snapped_points = ProjectedPoints.empty(len(indices), 3)
+        # centers of forbidden regions for the next round
+        separators = np.empty(n_points + 1)
+        separators[0] = d_min - half_min_spacing
+        separators[1:-1] = 0.5 * (distances[:-1] + distances[1:])
+        separators[-1] = d_max + half_min_spacing
 
-        region_boundaries = np.empty(2 * n_points)
-        region_boundaries[0] = d_min
-        region_boundaries[-1] = d_max
-        # views that stay in sync with region_boundaries
-        left_boundaries = region_boundaries[::2]
-        right_boundaries = region_boundaries[1::2]
+        # regions for the next round
+        regions = np.empty((n_points, 2))
+
+        # regions where we last projected to
+        projected_regions = np.full_like(regions, np.nan)
 
         n_iter = 0
         # maximum distances change compared to last iteration
@@ -955,44 +971,75 @@ class TrajectoryTrip(XYZDMixin):
 
         # use slices, not index lists to get views instead of copies
         # (we write to region_points later and want this to be reflected in snapped_points)
-        region_line_fractions = [self.line_fractions[i : i + 1] for i in indices]
+        region_line_fractions = [
+            self.line_fractions[i : i + 1] for i in range(len(self))[group_slice]
+        ]
         rprange = range(n_points - 1, -1, -1) if reverse else range(n_points)
         region_points = [snapped_points[i : i + 1] for i in rprange]
+
+        global_mins = self.projected_points.cartesian_distances[group_slice]
+        new_distances = np.empty_like(distances)
+        optimal = np.zeros(n_points, dtype=bool)
 
         # close to convergence, we move half the last delta in the next step, so if we would
         # run forever, we would still move (delta * sum (1/2 ** n), n=1 to infinity) = delta,
         # thus in all following steps combined, we move at most delta
         # so `convergence_accuracy / 1.1` should be fine to detect convergence with desired accuracy
+        # TODO (nice to have): This always seems to converge in 2 iterations. Can we proof that
+        # and get rid of the loop / accuracy check?
         while delta > convergence_accuracy / 1.1:
             n_iter += 1
             if n_iter > n_iter_max:
                 raise SnappingError("not converged")
-            mid_dists = 0.5 * (distances[:-1] + distances[1:])
-            region_boundaries[1:-2:2] = mid_dists - 0.5 * params.min_spacing
-            region_boundaries[2:-1:2] = mid_dists + 0.5 * params.min_spacing
+
+            regions[:, 0] = separators[:-1] + half_min_spacing
+            regions[:, 1] = separators[1:] - half_min_spacing
+            reproject = np.nonzero(
+                np.logical_not(optimal) & np.any(regions != projected_regions, axis=1)
+            )[0]
 
             logger.debug(
-                "n_iter=%d: delta=%.2e distances=%s region_boundaries=%s",
+                "n_iter=%d: delta=%.2e distances=%s regions=%s reproject=%s",
                 n_iter,
                 delta,
                 distances,
-                region_boundaries,
+                regions,
+                reproject,
             )
-            for lf, left, right, point_view in zip(
-                region_line_fractions, left_boundaries, right_boundaries, region_points
-            ):
-                # we write to the proper place in snapped_points via point_view
-                lf.project_between_distances(
-                    left, right, self.trajectory.dists, out=point_view
+
+            # TODO (nice to have / performance): we already projected globally
+            # so we could check for each point if the global distance is inside the region,
+            # then we could take the global solution for this point instead of projecting again
+            for i in reproject:
+                # we write to the proper place in snapped_points via region_points[i]
+                region_line_fractions[i].project_between_distances(
+                    *regions[i], self.trajectory.dists, out=region_points[i]
                 )
 
-            new_distances = interpolate(self.trajectory.dists, snapped_points.locations)
-            if reverse:
-                # internally, distances are always increasing,
-                # but snapped_points is in the decreasing order if reverse
-                new_distances = new_distances[::-1]
+            new_distances[reproject] = interpolate(
+                self.trajectory.dists, sp_view.locations[reproject]
+            )
             delta = np.abs(new_distances - distances).max()
             distances = new_distances
+
+            # We have a greedy algorithm, so once we reach the global optimum for a point,
+            # we will never give it up again. So we can quickly move the separators
+            # to speed up convergence of the other points.
+            optimal[reproject] = (
+                np.abs(sp_view.cartesian_distances[reproject] - global_mins[reproject])
+                <= convergence_accuracy
+            )
+
+            optimal_indices = np.nonzero(optimal)[0]
+            logger.debug("points that reached global optimum: %s", optimal_indices)
+            if len(optimal_indices) == n_points:
+                break
+
+            # for simplicity we first calculate default separators, then overwrite
+            # to avoid fiddling with more masks or indices
+            separators[1:-1] = 0.5 * (distances[:-1] + distances[1:])
+            separators[optimal_indices] = distances[optimal] - half_min_spacing
+            separators[optimal_indices + 1] = distances[optimal] + half_min_spacing
 
         logger.debug("converged in %d iterations", n_iter)
 
@@ -1046,6 +1093,17 @@ class SnappedTripPoints:
         """The shortest distances between trip points and the trajectory in meters."""
         return self.trip.projected_points.cartesian_distances
 
+    def snapping_distances_valid(
+        self, rtol: typing.Optional[float] = None, atol: typing.Optional[float] = None
+    ) -> np.ndarray:
+        if rtol is None:
+            rtol = self.trip.snapping_params.rtol_keep
+        if atol is None:
+            atol = self.trip.snapping_params.atol_keep
+        return self.trip.snapping_params.snapping_dists_admissible(
+            self.snapping_distances, self.shortest_distances, rtol=rtol, atol=atol
+        )
+
     def raise_invalid(
         self,
         rtol: typing.Optional[float] = None,
@@ -1059,13 +1117,7 @@ class SnappedTripPoints:
         Includes debug GeoJSON in the error message.
         Optionally dumps debug GeoJSON to a file.
         """
-        if rtol is None:
-            rtol = self.trip.snapping_params.rtol_keep
-        if atol is None:
-            atol = self.trip.snapping_params.atol_keep
-        valid = self.trip.snapping_params.snapping_dists_admissible(
-            self.snapping_distances, self.shortest_distances, rtol=rtol, atol=atol
-        )
+        valid = self.snapping_distances_valid(rtol=rtol, atol=atol)
         if not np.all(valid):
             debug = json.dumps(self.to_geojson(valid), indent=2)
             if debug_geojson_path:
