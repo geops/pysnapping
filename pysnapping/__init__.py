@@ -1,4 +1,7 @@
+from enum import Enum
+
 import pyproj
+
 
 EPSG4326 = pyproj.CRS.from_epsg(4326)
 
@@ -28,3 +31,9 @@ class NoSolution(ValueError):
 
 class ExtrapolationError(ValueError):
     pass
+
+
+class SnappingMethod(Enum):
+    trusted = "trusted"
+    projected = "projected"
+    iterative = "iterative"

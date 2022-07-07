@@ -1,7 +1,6 @@
 import typing
 from functools import partial
 import logging
-from enum import Enum
 import json
 
 import pyproj
@@ -26,7 +25,14 @@ from .util import (
     array_chk,
     simplify_2d_keep_rest,
 )
-from . import SnappingError, NoSolution, ExtrapolationError, EPSG4326, EPSG4978
+from . import (
+    SnappingError,
+    NoSolution,
+    ExtrapolationError,
+    EPSG4326,
+    EPSG4978,
+    SnappingMethod,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -156,12 +162,6 @@ class SnappingParams(typing.NamedTuple):
 
 
 DEFAULT_SNAPPING_PARAMS = SnappingParams()
-
-
-class SnappingMethod(Enum):
-    trusted = "trusted"
-    projected = "projected"
-    iterative = "iterative"
 
 
 class DubiousTrajectory(XYZDMixin):
@@ -861,7 +861,7 @@ class TrajectoryTrip(XYZDMixin):
                 convergence_accuracy=convergence_accuracy,
                 n_iter_max=n_iter_max,
             )
-            reverse_order = False
+            logger.debug("forward distances: %s", distances)
             if reverse_order_allowed:
                 # pick forward/backward solution with better sum of squared snapping distances
                 residuum = (snapped_points.cartesian_distances**2).sum()
@@ -873,18 +873,14 @@ class TrajectoryTrip(XYZDMixin):
                     convergence_accuracy=convergence_accuracy,
                     n_iter_max=n_iter_max,
                 )
+                logger.debug("backward distances: %s", alt_distances)
                 alt_residuum = (alt_snapped_points.cartesian_distances**2).sum()
+                logger.debug("residuum: %s", residuum)
+                logger.debug("backward residuum: %s", alt_residuum)
                 if alt_residuum < residuum:
-                    # we reverse later after dists_ok check
-                    reverse_order = True
+                    snapped_trip_points.reverse_order = True
                     snapped_points = alt_snapped_points
                     distances = alt_distances
-
-            assert d_ok(distances), "bad dists from _snap_untrusted_iteratively"
-            if reverse_order:
-                snapped_trip_points.reverse_order = True
-                snapped_points = snapped_points[::-1]
-                distances = distances[::-1]
 
         snapped_trip_points.distances[indices] = distances
         snapped_trip_points.snapped_points[indices] = snapped_points
@@ -927,10 +923,13 @@ class TrajectoryTrip(XYZDMixin):
         then regions are recalculated and the right part can move to the left
         a little further.
 
-        If `reverse` is set to `True`, the order of the points is reversed
+        If `reverse` is set to `True`, the order of the points is reversed internally
         and the initial distances are reflected at `(d_min + d_max) / 2` and reversed.
+
+        The order of the output is always consistent with the order of `indices` (not reversed).
         """
         params = self.snapping_params
+        n_points = len(indices)
         if reverse:
             indices = indices[::-1]
             distances = self.dists[indices]
@@ -943,7 +942,7 @@ class TrajectoryTrip(XYZDMixin):
 
         snapped_points = ProjectedPoints.empty(len(indices), 3)
 
-        region_boundaries = np.empty(2 * len(indices))
+        region_boundaries = np.empty(2 * n_points)
         region_boundaries[0] = d_min
         region_boundaries[-1] = d_max
         # views that stay in sync with region_boundaries
@@ -954,10 +953,11 @@ class TrajectoryTrip(XYZDMixin):
         # maximum distances change compared to last iteration
         delta = float("inf")
 
-        # use slices, not index lists to get views
+        # use slices, not index lists to get views instead of copies
         # (we write to region_points later and want this to be reflected in snapped_points)
         region_line_fractions = [self.line_fractions[i : i + 1] for i in indices]
-        region_points = [snapped_points[i : i + 1] for i in indices]
+        rprange = range(n_points - 1, -1, -1) if reverse else range(n_points)
+        region_points = [snapped_points[i : i + 1] for i in rprange]
 
         # close to convergence, we move half the last delta in the next step, so if we would
         # run forever, we would still move (delta * sum (1/2 ** n), n=1 to infinity) = delta,
@@ -988,12 +988,20 @@ class TrajectoryTrip(XYZDMixin):
 
             new_distances = interpolate(self.trajectory.dists, snapped_points.locations)
             if reverse:
-                # snapped_points is still in the same order
+                # internally, distances are always increasing,
+                # but snapped_points is in the decreasing order if reverse
                 new_distances = new_distances[::-1]
             delta = np.abs(new_distances - distances).max()
             distances = new_distances
 
         logger.debug("converged in %d iterations", n_iter)
+
+        assert self.dists_ok(
+            distances, d_min=d_min, d_max=d_max
+        ), "converged dists not admissible"
+
+        if reverse:
+            distances = distances[::-1]
 
         return snapped_points, distances
 

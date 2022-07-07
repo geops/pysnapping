@@ -3,12 +3,20 @@ from numpy.testing import assert_allclose
 import pytest
 import pyproj
 from itertools import product
+from functools import partial
 
-from pysnapping.snap import DubiousTrajectory, DubiousTrajectoryTrip
-from pysnapping.linear_referencing import locate, interpolate
+from pysnapping.snap import DubiousTrajectory, DubiousTrajectoryTrip, SnappingMethod
+from pysnapping.linear_referencing import locate, interpolate, resample
+from pysnapping.util import get_trafo, transform_coords
+from pysnapping import EPSG4326, EPSG4978
 
 
 WGS84_GEOD = pyproj.Geod(ellps="WGS84")
+
+
+TO_EPSG4326 = partial(
+    transform_coords, trafo=get_trafo(from_crs=EPSG4978, to_crs=EPSG4326)
+)
 
 
 def offset(point, dist, azimuth):
@@ -135,6 +143,144 @@ def test_convert_using_only_times():
     assert not np.any(trip.dists_trusted)
 
 
+def test_snap_simple_forward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((2, 5), np.nan)
+    trip_xyzdt[:, :3] = dtraj.xyz
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.projected
+    assert_allclose(snapped.snapping_distances, 0)
+    assert_allclose(snapped.shortest_distances, 0)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords), dtrip.xyz, rtol=0, atol=1e-6
+    )
+    assert_allclose(snapped.distances, [0, 1000])
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(), [dtraj.xy]
+    )
+
+
+def test_snap_simple_reversed():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((2, 5), np.nan)
+    trip_xyzdt[:, :3] = dtraj.xyz[::-1]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.projected
+    assert_allclose(snapped.snapping_distances, 0)
+    assert_allclose(snapped.shortest_distances, 0)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords), dtrip.xyz, rtol=0, atol=1e-6
+    )
+    assert_allclose(snapped.distances, [1000, 0])
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(), [dtraj.xy[::-1]]
+    )
+
+
+def test_snap_iterative_forward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((3, 5), np.nan)
+    trip_xyzdt[:2, :3] = dtraj.xyz
+    real_dists = np.array([0, 1000.0])
+    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([900.0]))
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.iterative
+    assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
+    # 3 is closer to the initial guess (equidistant placement) and thus ends up at
+    # its global otpimum at 900 before 2 has a chance to move from 500 up; min dist is 25 meters
+    expected_dists = np.array([0, 875, 900.0])
+    assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
+    assert_allclose(snapped.snapping_distances, [0, 125, 0], rtol=0, atol=1)
+    expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
+        expected_lon_lat,
+        rtol=0,
+        atol=1e-5,
+    )
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(),
+        [expected_lon_lat[[0, 1]], expected_lon_lat[[1, 2]]],
+        rtol=0,
+        atol=1e-5,
+    )
+
+
+def test_snap_iterative_backward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((3, 5), np.nan)
+    trip_xyzdt[:2, :3] = dtraj.xyz[::-1]
+    real_dists = np.array([0, 1000.0])
+    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([500.0]))
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.iterative
+    assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
+    # initial equidistant placement lets 2 and 3 fight for 250
+    # but min spacing is 25 meters
+    expected_dists = np.array([1000.0, 250 + 25 / 2, 250 - 25 / 2])
+    assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
+    assert_allclose(
+        snapped.snapping_distances, [0, 250 + 25 / 2, 250 + 25 / 2], rtol=0, atol=1
+    )
+    expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
+        expected_lon_lat,
+        rtol=0,
+        atol=1e-5,
+    )
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(),
+        [expected_lon_lat[[0, 1]], expected_lon_lat[[1, 2]]],
+        rtol=0,
+        atol=1e-5,
+    )
+
+
 @pytest.mark.parametrize("seed", range(100))
 def test_random_garbage(seed):
     rng = np.random.default_rng(seed=seed)
@@ -179,7 +325,6 @@ def test_random_garbage(seed):
     dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzdt)
     trip = dtrip.to_trajectory_trip()
     snapped = trip.snap_trip_points()
-
     min_spacing = min(
         trip.snapping_params.min_spacing, trip.trajectory.length / (n_points - 1)
     )
