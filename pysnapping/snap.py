@@ -718,6 +718,7 @@ class TrajectoryTrip(XYZDMixin):
                 (-1, self.trajectory.d_max),
             ):
                 if missing[index]:
+                    logger.debug("fixing distance at %d to boundary", index)
                     missing[index] = False
                     available[index] = True
                     self.dists[index] = value
@@ -742,6 +743,7 @@ class TrajectoryTrip(XYZDMixin):
             and np.all(np.diff(times[times_available]) >= 0)
         ):
             try:
+                logger.debug("trying to estimate distances from times")
                 y_prime = resample(
                     x=times[input_indices],
                     y=self.dists[input_indices],
@@ -749,8 +751,16 @@ class TrajectoryTrip(XYZDMixin):
                     extrapolate=True,
                 )
             except ExtrapolationError:
+                logger.debug(
+                    "estimating distances from times failed (not enough unique times)"
+                )
                 pass
             else:
+                logger.debug(
+                    "estimated %d/%d distances from times",
+                    len(output_indices),
+                    len(self),
+                )
                 self.dists[output_indices] = y_prime
                 # dists estimated from travel times could be too close together
                 # or too close to known dists or out of bounds (if extrapolated)
@@ -771,6 +781,7 @@ class TrajectoryTrip(XYZDMixin):
         #  with the same spacing.)
         for index, value in ((0, self.trajectory.d_min), (-1, self.trajectory.d_max)):
             if missing[index]:
+                logger.debug("fixing distance at %d to boundary", index)
                 missing[index] = False
                 available[index] = True
                 self.dists[index] = value
@@ -947,7 +958,7 @@ class TrajectoryTrip(XYZDMixin):
             # a view of snapped_points consistent with increasing distance order
             sp_view = snapped_points[::-1]
         else:
-            distances = self.dists[group_slice]
+            distances = self.dists[group_slice].copy()
             sp_view = snapped_points
 
         if not self.dists_ok(distances, d_min=d_min, d_max=d_max):
@@ -978,15 +989,12 @@ class TrajectoryTrip(XYZDMixin):
         region_points = [snapped_points[i : i + 1] for i in rprange]
 
         global_mins = self.projected_points.cartesian_distances[group_slice]
-        new_distances = np.empty_like(distances)
         optimal = np.zeros(n_points, dtype=bool)
 
         # close to convergence, we move half the last delta in the next step, so if we would
         # run forever, we would still move (delta * sum (1/2 ** n), n=1 to infinity) = delta,
         # thus in all following steps combined, we move at most delta
         # so `convergence_accuracy / 1.1` should be fine to detect convergence with desired accuracy
-        # TODO (nice to have): This always seems to converge in 2 iterations. Can we proof that
-        # and get rid of the loop / accuracy check?
         while delta > convergence_accuracy / 1.1:
             n_iter += 1
             if n_iter > n_iter_max:
@@ -997,30 +1005,29 @@ class TrajectoryTrip(XYZDMixin):
             reproject = np.nonzero(
                 np.logical_not(optimal) & np.any(regions != projected_regions, axis=1)
             )[0]
-
-            logger.debug(
-                "n_iter=%d: delta=%.2e distances=%s regions=%s reproject=%s",
-                n_iter,
-                delta,
-                distances,
-                regions,
-                reproject,
-            )
+            if not len(reproject):
+                break
 
             # TODO (nice to have / performance): we already projected globally
             # so we could check for each point if the global distance is inside the region,
             # then we could take the global solution for this point instead of projecting again
             for i in reproject:
+                logger.debug(
+                    "iter %d: reprojecting %d to [%.3f km, %.3f km]",
+                    n_iter,
+                    i,
+                    *(regions[i] * 1e-3),
+                )
                 # we write to the proper place in snapped_points via region_points[i]
                 region_line_fractions[i].project_between_distances(
                     *regions[i], self.trajectory.dists, out=region_points[i]
                 )
 
-            new_distances[reproject] = interpolate(
+            reprojected_distances = interpolate(
                 self.trajectory.dists, sp_view.locations[reproject]
             )
-            delta = np.abs(new_distances - distances).max()
-            distances = new_distances
+            delta = np.abs(reprojected_distances - distances[reproject]).max()
+            distances[reproject] = reprojected_distances
 
             # We have a greedy algorithm, so once we reach the global optimum for a point,
             # we will never give it up again. So we can quickly move the separators
@@ -1031,15 +1038,15 @@ class TrajectoryTrip(XYZDMixin):
             )
 
             optimal_indices = np.nonzero(optimal)[0]
-            logger.debug("points that reached global optimum: %s", optimal_indices)
             if len(optimal_indices) == n_points:
                 break
 
             # for simplicity we first calculate default separators, then overwrite
             # to avoid fiddling with more masks or indices
             separators[1:-1] = 0.5 * (distances[:-1] + distances[1:])
-            separators[optimal_indices] = distances[optimal] - half_min_spacing
-            separators[optimal_indices + 1] = distances[optimal] + half_min_spacing
+            optimal_distances = distances[optimal_indices]
+            separators[optimal_indices] = optimal_distances - half_min_spacing
+            separators[optimal_indices + 1] = optimal_distances + half_min_spacing
 
         logger.debug("converged in %d iterations", n_iter)
 

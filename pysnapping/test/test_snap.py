@@ -4,6 +4,8 @@ import pytest
 import pyproj
 from itertools import product
 from functools import partial
+import os
+import json
 
 from pysnapping.snap import DubiousTrajectory, DubiousTrajectoryTrip, SnappingMethod
 from pysnapping.linear_referencing import locate, interpolate, resample
@@ -333,3 +335,45 @@ def test_random_garbage(seed):
             WGS84_GEOD.line_length(split_segment[:, 0], split_segment[:, 1])
             >= 0.99 * min_spacing
         )
+
+
+@pytest.mark.skip(
+    reason="""Data contains a hard case with a trip with some detours, no distance information
+and sloppy times (often the same time for different stops) leading to initial distances
+ending up in the wrong branch of their detour.
+This is one of the few examples that currently still fail to snap with stops close
+enough to their original position with the iterative method.
+Possible solution: Use different minimum spacings calculated from stop-stop distances
+and stop-trajectory distances (currently we only have a fixed minimum spacing of 25 meters).
+This could help to get a better initial guess when times are bad.
+Or: Fix geOps routing API when skipping stops: Currently all distance information is lost
+when stops are skipped during routing. This could be fixed such that only the distances
+of the missing stops are missing.
+"""
+)
+def test_complex_trip():
+    fn = os.path.join(os.path.dirname(__file__), "complex_trip.geojson")
+    with open(fn) as handle:
+        coll = json.load(handle)
+    point_features = []
+    for feature in coll["features"]:
+        if feature["geometry"]["type"] == "LineString":
+            traj_feature = feature
+        else:
+            point_features.append(feature)
+    point_features.sort(key=lambda f: f["properties"]["index"])
+
+    dtraj = DubiousTrajectory(
+        [c + [None] for c in traj_feature["geometry"]["coordinates"]]
+    )
+    dtrip = DubiousTrajectoryTrip(
+        dtraj,
+        [
+            f["geometry"]["coordinates"] + [None, f["properties"]["time"]]
+            for f in point_features
+        ],
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    snapped.raise_invalid(debug_geojson_path="/home/alexanderh/debug_snapping.geojson")

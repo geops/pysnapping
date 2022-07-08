@@ -92,7 +92,7 @@ def fix_sequence(
     required_length = d_min_arr.sum()
     if atol is None:
         atol = 0.02 * available_length / n_values
-    if required_length > available_length:
+    if required_length > available_length + 2 * atol:
         raise NoSolution(
             f"required length {required_length} > available length {available_length}"
         )
