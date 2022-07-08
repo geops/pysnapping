@@ -376,4 +376,4 @@ def test_complex_trip():
     trip = dtrip.to_trajectory_trip()
     snapped = trip.snap_trip_points()
     assert not snapped.reverse_order
-    snapped.raise_invalid(debug_geojson_path="/home/alexanderh/debug_snapping.geojson")
+    snapped.raise_invalid()
