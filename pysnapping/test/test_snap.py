@@ -337,7 +337,7 @@ def test_random_garbage(seed):
         )
 
 
-@pytest.mark.skip(
+@pytest.mark.xfail(
     reason="""Data contains a hard case with a trip with some detours, no distance information
 and sloppy times (often the same time for different stops) leading to initial distances
 ending up in the wrong branch of their detour.
