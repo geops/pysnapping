@@ -67,7 +67,7 @@ def fix_sequence(
     such that
       * all values are within [v_min, v_max]
       * each values[i + 1] is at least d_min[i] greater than its predecessor
-      * the sum of least squares distances to the original values is minimized
+      * the sum of squared distances to the original values is minimized
 
     Or in other words: fix order/minimum spacing, changing the values as little as possible.
 
