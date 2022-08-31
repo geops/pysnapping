@@ -43,7 +43,14 @@ run_tests:
   script:
     - pip install --no-index --no-deps wheels/*
     - pip install --no-index --find-links=dev-wheels pytest pytest-cov
-    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-config=setup.cfg pysnapping
+    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-config=setup.cfg --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=50 --junitxml=junit_coverage.xml pysnapping
+  coverage: '/^TOTAL.+?(\d+\%)$/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: cobertura_coverage.xml
+      junit: junit_coverage.xml
 
 run_pre_commit_checks:
   stage: test

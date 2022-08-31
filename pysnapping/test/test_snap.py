@@ -1,321 +1,379 @@
-from functools import partial
-
-import pytest
-from shapely.geometry import LineString, MultiPoint
 import numpy as np
 from numpy.testing import assert_allclose
+import pytest
+import pyproj
+from itertools import product
+from functools import partial
+import os
+import json
 
-from pysnapping.shapes import (
-    split_shape,
-    split_ls_coords,
-    GeomWithDists,
-    get_geodesic_line_string_dists,
+from pysnapping.snap import DubiousTrajectory, DubiousTrajectoryTrip, SnappingMethod
+from pysnapping.linear_referencing import locate, interpolate, resample
+from pysnapping.util import get_trafo, transform_coords
+from pysnapping import EPSG4326, EPSG4978
+
+
+WGS84_GEOD = pyproj.Geod(ellps="WGS84")
+
+
+TO_EPSG4326 = partial(
+    transform_coords, trafo=get_trafo(from_crs=EPSG4978, to_crs=EPSG4326)
 )
-from pysnapping.linear_referencing import snap_points_in_order, SnappingError
 
 
-snap = partial(
-    snap_points_in_order,
-    min_dist=25.0,  # meters
-    start_occupied=False,
-    end_occupied=False,
-    try_reverse=False,
-    convergence_accuracy=1.0,  # meters
-)
+def offset(point, dist, azimuth):
+    return np.array(WGS84_GEOD.fwd(*point, az=azimuth, dist=dist)[:2], dtype=float)
 
 
-@pytest.fixture
-def simple_ls():
-    return LineString([[0, 0], [1e-3, 0], [1e-3, 2e-3], [5e-3, 2e-3]])
-
-
-@pytest.fixture
-def straight_ls():
-    # roughly 1 km long
-    return LineString([[0, 0], [1e-2, 0]])
-
-
-@pytest.fixture
-def straight_ls_dists():
-    # not the real geodesic dists, but simplified for testing
-    return [0, 1000]
-
-
-def compare_split_result(result, expected):
-    assert len(result) == len(expected), "result and expected result have same length"
-    for i, (r, e) in enumerate(zip(result, expected)):
-        try:
-            assert_allclose(r, e, verbose=True)
-        except AssertionError as error:
-            raise AssertionError(f"entries at index {i} almost equal") from error
-
-
-def test_split_ls_coords_trivial():
-    ls_coords = np.array([[1, 2, 0], [3, 4, 1]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [])
-    expected = [ls_coords]
-    compare_split_result(result, expected)
-
-
-def test_split_ls2_coords_start():
-    ls_coords = np.array([[1, 2, 10], [3, 4, 11]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [10])
-    expected = [[[1, 2, 10], [1, 2, 10]], [[1, 2, 10], [3, 4, 11]]]
-    compare_split_result(result, expected)
-
-
-def test_split_ls2_coords_end():
-    ls_coords = np.array([[1, 2, 10], [3, 4, 11]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [11])
-    expected = [[[1, 2, 10], [3, 4, 11]], [[3, 4, 11], [3, 4, 11]]]
-    compare_split_result(result, expected)
-
-
-def test_split_ls2_coords_segment():
-    ls_coords = np.array([[1, 2, 10], [3, 4, 11]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [10.5])
-    expected = [[[1, 2, 10], [2, 3, 10.5]], [[2, 3, 10.5], [3, 4, 11]]]
-    compare_split_result(result, expected)
-
-
-def test_split_ls3_coords_vertex():
-    ls_coords = np.array([[1, 2, 10], [3, 4, 11], [5, 6, 15]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [11])
-    expected = [[[1, 2, 10], [3, 4, 11]], [[3, 4, 11], [5, 6, 15]]]
-    compare_split_result(result, expected)
-
-
-def test_split_ls3_coords_segment():
-    ls_coords = np.array([[1, 2, 10], [3, 4, 11], [5, 6, 21]])
-    result = split_ls_coords(ls_coords, ls_coords[:, 2], [16])
-    expected = [[[1, 2, 10], [3, 4, 11], [4, 5, 16]], [[4, 5, 16], [5, 6, 21]]]
-    compare_split_result(result, expected)
-
-
-def test_split_ls_large_many():
-    ls_dists = np.arange(1000) ** 2 - 100.0
-    ls_coords = np.array([[d, -2 * d + 5] for d in ls_dists])
-    split_dists = [
-        ls_dists[0],
-        ls_dists[10],
-        (ls_dists[113] + ls_dists[114]) / 2,
-        (ls_dists[113] + 2 * ls_dists[114]) / 3,
-        (ls_dists[-2] + ls_dists[-1]) / 2,
-        ls_dists[-1],
-    ]
-    result = split_ls_coords(ls_coords, ls_dists, split_dists)
-    expected = [
-        [ls_coords[0], ls_coords[0]],
-        ls_coords[:11],
-        list(ls_coords[10:114]) + [(ls_coords[113] + ls_coords[114]) / 2],
-        [
-            (ls_coords[113] + ls_coords[114]) / 2,
-            (ls_coords[113] + 2 * ls_coords[114]) / 3,
-        ],
-        [(ls_coords[113] + 2 * ls_coords[114]) / 3]
-        + list(ls_coords[114:-1])
-        + [(ls_coords[-2] + ls_coords[-1]) / 2],
-        [(ls_coords[-2] + ls_coords[-1]) / 2, ls_coords[-1]],
-        [ls_coords[-1], ls_coords[-1]],
-    ]
-    compare_split_result(result, expected)
-
-
-def test_split_shape_all_trusted(simple_ls):
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([10, 100, 1000, 1200], dtype=float),
-        np.ones(4, dtype=bool),
-        np.ones(4, dtype=bool),
-        4,
-    )
-    # point coords shall not matter, only dists
-    points = GeomWithDists(
-        MultiPoint([[-5, -5], [-5, -5]]),
-        np.array([55, 1100]),
-        np.ones(2, dtype=bool),
-        np.ones(2, dtype=bool),
-        2,
-    )
-    line_strings = split_shape(shape, points)
-    assert len(line_strings) == 1
-    assert_allclose(
-        np.array(line_strings[0].coords),
-        np.array([[5e-4, 0], [1e-3, 0], [1e-3, 2e-3], [3e-3, 2e-3]]),
+def make_dubious_traj(real_segment_lengths, azimuths, dubious_dists, start=(7, 40)):
+    points = [start]
+    for dist, az in zip(real_segment_lengths, azimuths):
+        points.append(offset(points[-1], dist, az))
+    # default z is 0 (we call from_xyd_and_z to cover it in tests)
+    return DubiousTrajectory.from_xyd_and_z(
+        [[p[0], p[1], d] for p, d in zip(points, dubious_dists)]
     )
 
 
-def test_split_shape_all_but_one_trusted(simple_ls):
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([10, 100, 1000, 1200], dtype=float),
-        np.ones(4, dtype=bool),
-        np.ones(4, dtype=bool),
-        4,
-    )
-    # coords for point with untrusted dist
-    untrusted_coords = [1e-3, 1e-3]
-    points = GeomWithDists(
-        MultiPoint([[-5, -5], untrusted_coords, [-5, -5]]),
-        np.array([55, 500, 1100]),
-        np.array([True, False, True]),
-        np.ones(3, dtype=bool),
-        3,
-    )
-    line_strings = split_shape(shape, points)
-    assert len(line_strings) == 2
-    assert_allclose(
-        np.array(line_strings[0].coords),
-        np.array([[5e-4, 0], [1e-3, 0], untrusted_coords]),
-    )
-    assert_allclose(
-        np.array(line_strings[1].coords),
-        np.array([untrusted_coords, [1e-3, 2e-3], [3e-3, 2e-3]]),
-    )
+def segment_lengths_to_dists(segment_lengths, start=0):
+    dists = np.full((len(segment_lengths) + 1,), start)
+    dists[1:] += np.cumsum(segment_lengths)
+    return dists
 
 
-@pytest.mark.parametrize("reverse", (True, False))
-def test_split_shape_coords_only(simple_ls, reverse):
-    if reverse:
-        simple_ls = LineString(simple_ls.coords[::-1])
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([None] * 4, dtype=float),
-        np.zeros(4, dtype=bool),
-        np.zeros(4, dtype=bool),
-        0,
-    )
-    mp = MultiPoint([[1e-4, 5e-4], [6e-3, 3e-3]])
-    points = GeomWithDists(
-        mp,
-        np.array([None, None], dtype=float),
-        np.zeros(2, dtype=bool),
-        np.zeros(2, dtype=bool),
-        0,
-    )
-    line_strings = split_shape(shape, points)
-    assert len(line_strings) == 1
-    assert_allclose(
-        np.array(line_strings[0].coords),
-        np.array([[1e-4, 0], [1e-3, 0], [1e-3, 2e-3], [5e-3, 2e-3]]),
-    )
-
-
-def test_split_shape_wrong_order_one_untrusted(simple_ls):
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([10, 100, 1000, 1200], dtype=float),
-        np.ones(4, dtype=bool),
-        np.ones(4, dtype=bool),
-        4,
-    )
-    # we reverse the coords but give a hint for the location of one of the points
-    # the solution should shift the points close together (but it cannot swap them)
-    mp = MultiPoint([[1e-4, 5e-4], [6e-3, 3e-3]][::-1])
-    points = GeomWithDists(
-        mp,
-        np.array([1010, None], dtype=float),
-        np.zeros(2, dtype=bool),
-        np.array([True, False]),
-        1,
-    )
-    min_dist = 25
-    line_strings = split_shape(shape, points, min_dist_meters=min_dist)
-    assert len(line_strings) == 1
-    ls = line_strings[0]
-    assert get_geodesic_line_string_dists(np.array(ls.coords))[-1] == pytest.approx(
-        min_dist
-    ), "maximally close"
-    assert ls.coords[0][0] < ls.coords[-1][0], "correct order"
-
-
-def test_split_shape_only_one_good_dist_on_shape(simple_ls):
-    shape = GeomWithDists(
-        simple_ls,
-        np.array([None, None, 1000, None], dtype=float),
-        np.array([False, False, True, False]),
-        np.array([False, False, True, False]),
-        1,
-    )
-    # coords for second shall not matter
-    mp = MultiPoint([[1e-4, 5e-4], [-5, -5]])
-    points = GeomWithDists(
-        mp,
-        np.array([None, 1000], dtype=float),
-        np.array([False, True]),
-        np.array([False, True]),
-        1,
-    )
-    min_dist = 25
-    line_strings = split_shape(shape, points, min_dist_meters=min_dist)
-    assert len(line_strings) == 1
-    ls = line_strings[0]
-    assert_allclose(
-        np.array(ls.coords),
-        np.array([[1e-4, 0], [1e-3, 0], [1e-3, 2e-3]]),
-    )
-
-
-_many_d = [0, 25, 80] + list(np.arange(400, 700, 25)) + [900, 998]
-
-
+# test around the entire earth with different orientations
 @pytest.mark.parametrize(
-    "mp,d_mp,atol,expected",
-    [
-        # degenerate case
-        (MultiPoint([]), [], None, []),
-        # one point without dist hint
-        (MultiPoint([[2.1e-3, 1e-4]]), [None], None, [210]),
-        # two points without dist hint
-        (MultiPoint([[5e-3, 1e-4], [6e-3, -1e-4]]), [None] * 2, None, [500, 600]),
-        # two points with snapped coords in wrong order without dist hint
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [None] * 2, None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with dist hints
-        # (same result, but should converge faster)
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [650, 690], None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with a single dist hint
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [None, 710], None, [700 - 25, 700]),
-        # two points with snapped coords in wrong order with bogus dist hint
-        # (dist hints shall be ignored in this case)
-        (MultiPoint([[8e-3, 1e-4], [7e-3, -1e-4]]), [800, 700], None, [700 - 25, 700]),
-        # many unevenly spaced points without dist hint (will it converge?)
-        (
-            MultiPoint([[d * 1e-5, 1e-4] for d in _many_d]),
-            [None] * len(_many_d),
-            None,
-            _many_d,
-        ),
-        # exactly as many points as we can fit, all with the same coords
-        # optimization should terminate with the computed initial equidistant dists
-        # but we need to increase atol, so the solution is accepted (this is
-        # bad data that should not occur in reality)
-        (
-            MultiPoint([[0, 0] for _ in range(41)]),
-            [None] * 41,
-            1200,
-            np.linspace(0, 1000, 41),
-        ),
-        # same as above but with default atol shall give an error
-        (
-            MultiPoint([[0, 0] for _ in range(41)]),
-            [None] * 41,
-            None,
-            SnappingError,
-        ),
-        # too many points
-        (MultiPoint([[0, 0] for _ in range(42)]), [None] * 42, None, SnappingError),
-    ],
+    "lon,lat,azimuth",
+    list(
+        product(
+            np.linspace(-180, 180, 5), np.linspace(-90, 90, 5), np.linspace(0, 360, 5)
+        )
+    ),
 )
-def test_snap(straight_ls, straight_ls_dists, mp, d_mp, atol, expected):
-    if atol is not None:
-        atol_snap = partial(snap, res_atol=atol)
+def test_long_segment_accuracy(lon, lat, azimuth):
+    # one segment with 100 km geodesic length
+    real_length = 100_000
+    dtraj = make_dubious_traj([real_length], [azimuth], [0, 1], start=(lon, lat))
+    # we use the trip only to get the converted trajectory
+    dtrip = DubiousTrajectoryTrip(dtraj, np.zeros((2, 5)))
+    trip = dtrip.to_trajectory_trip()
+    # 1.1 meter deviation for 100 km segment is really more than we need
+    # since typically segments in public transport data are much shorter
+    assert trip.trajectory.length == pytest.approx(real_length, rel=0, abs=1.1)
+
+
+def test_convert_good_dists():
+    real_segment_lengths = [100, 1500, 200, 26]
+    dtraj = make_dubious_traj(
+        real_segment_lengths, [0, 15, -15, 20], [10, 20, 30, 40, 50]
+    )
+    dubious_trip_dists = np.array([15, 37.5])
+    coords = interpolate(dtraj.xy, locate(dtraj.dists, dubious_trip_dists))
+    trip_xyzdt = [
+        tuple(offset(c, 30, 90)) + (0, d, None)
+        for d, c in zip(dubious_trip_dists, coords)
+    ]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+
+    # compare EPSG4978 length to geodesic length
+    assert trip.trajectory.length == pytest.approx(1826)
+    assert_allclose(
+        trip.trajectory.dists, segment_lengths_to_dists(real_segment_lengths)
+    )
+
+    # 15 is halfway between 10 and 20, thus halfway of 0->100 = 50
+    # 37.5 is 3/4 of 30->40 thus 3/4 of 1600 -> 1800 = 1750
+    assert_allclose(trip.dists, [50, 1750])
+    assert np.all(trip.dists_trusted)
+
+
+def test_convert_using_times_and_dists():
+    real_segment_lengths = [100, 1500, 200, 26]
+    dtraj = make_dubious_traj(
+        real_segment_lengths,
+        [0, 15, -15, 20],
+        [None, 10, 160, None, None],
+    )
+
+    # two distance/time combinations are given, so we can interpolate and extrapolate the rest
+    dists = [None, 20, None, 150, None, None]
+    times = [300, 400, 2000, 3000, 3040, 4000]
+
+    coords = interpolate(dtraj.xy, locate(dtraj.dists, np.array(dists, dtype=float)))
+    trip_xyzdt = [
+        (tuple(offset(c, 30, 90)) if d is not None else (7, 40)) + (0, d, t)
+        for c, d, t in zip(coords, dists, times)
+    ]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    # values are chosen s.th. times are metric dists x2, so time 300 -> metric dist 150,
+    # 400 -> 200 (trusted input),
+    # 2000 -> 1000,
+    # 3000 -> 1500 (trusted input),
+    # 3040 -> 1520 but too close to 1500 and since 1500 is trusted -> 1525 (min spacing 25 meters)
+    # and 4000 -> 2000 but trajectory ends at 1826.
+    assert_allclose(trip.dists, [150, 200, 1000, 1500, 1525, 1826])
+    assert np.all(trip.dists_trusted == [False, True, False, True, False, False])
+
+
+def test_convert_using_only_times():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+
+    times = [0, 1000, 2500, 5000]
+
+    trip_xyzdt = [(7, 40, 0, None, t) for t in times]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    # if no trip point distances are available,
+    # it is assumed that the trip spans the whole trajectory (1000 meters in 5000 seconds)
+    assert_allclose(trip.dists, [t / 5 for t in times])
+    assert not np.any(trip.dists_trusted)
+
+
+def test_snap_simple_forward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((2, 5), np.nan)
+    trip_xyzdt[:, :3] = dtraj.xyz
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.projected
+    assert_allclose(snapped.snapping_distances, 0)
+    assert_allclose(snapped.shortest_distances, 0)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords), dtrip.xyz, rtol=0, atol=1e-6
+    )
+    assert_allclose(snapped.distances, [0, 1000])
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(), [dtraj.xy]
+    )
+
+
+def test_snap_simple_reversed():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((2, 5), np.nan)
+    trip_xyzdt[:, :3] = dtraj.xyz[::-1]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.projected
+    assert_allclose(snapped.snapping_distances, 0)
+    assert_allclose(snapped.shortest_distances, 0)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords), dtrip.xyz, rtol=0, atol=1e-6
+    )
+    assert_allclose(snapped.distances, [1000, 0])
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(), [dtraj.xy[::-1]]
+    )
+
+
+def test_snap_iterative_forward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((3, 5), np.nan)
+    trip_xyzdt[:2, :3] = dtraj.xyz
+    real_dists = np.array([0, 1000.0])
+    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([900.0]))
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.iterative
+    assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
+    # 3 is closer to the initial guess (equidistant placement) and thus ends up at
+    # its global otpimum at 900 before 2 has a chance to move from 500 up; min dist is 25 meters
+    expected_dists = np.array([0, 875, 900.0])
+    assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
+    assert_allclose(snapped.snapping_distances, [0, 125, 0], rtol=0, atol=1)
+    expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
+        expected_lon_lat,
+        rtol=0,
+        atol=1e-5,
+    )
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(),
+        [expected_lon_lat[[0, 1]], expected_lon_lat[[1, 2]]],
+        rtol=0,
+        atol=1e-5,
+    )
+
+
+def test_snap_iterative_backward():
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [None, None],
+    )
+    trip_xyzdt = np.full((3, 5), np.nan)
+    trip_xyzdt[:2, :3] = dtraj.xyz[::-1]
+    real_dists = np.array([0, 1000.0])
+    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([500.0]))
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzdt=trip_xyzdt,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.iterative
+    assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
+    # initial equidistant placement lets 2 and 3 fight for 250
+    # but min spacing is 25 meters
+    expected_dists = np.array([1000.0, 250 + 25 / 2, 250 - 25 / 2])
+    assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
+    assert_allclose(
+        snapped.snapping_distances, [0, 250 + 25 / 2, 250 + 25 / 2], rtol=0, atol=1
+    )
+    expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
+    assert_allclose(
+        TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
+        expected_lon_lat,
+        rtol=0,
+        atol=1e-5,
+    )
+    assert_allclose(
+        snapped.get_inter_point_ls_lon_lat_in_travel_direction(),
+        [expected_lon_lat[[0, 1]], expected_lon_lat[[1, 2]]],
+        rtol=0,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("seed", range(100))
+def test_random_garbage(seed):
+    rng = np.random.default_rng(seed=seed)
+
+    if seed == 0:
+        # special case: short trajectory with many points
+        n_segments = 1
+        segment_lengths = np.array([100.0])
+        n_points = 50
+        z = 0
+    elif seed == 1:
+        # special case: zero length trajectory ("elevator" in 2d)
+        n_segments = 1
+        segment_lengths = np.array([0.0])
+        n_points = 3
+        z = 0
     else:
-        atol_snap = snap
-    if type(expected) == type and issubclass(expected, Exception):
-        with pytest.raises(expected):
-            atol_snap(straight_ls, straight_ls_dists, mp, d_mp)
-    else:
-        result, reverse = atol_snap(straight_ls, straight_ls_dists, mp, d_mp)
-        assert not reverse
-        # result should be converged to about 1 meter
-        assert_allclose(result, expected, rtol=0, atol=1.1)
+        n_segments = rng.integers(1, 1001)
+        segment_lengths = rng.uniform(0, 3000, n_segments)
+        n_points = rng.integers(2, 51)
+        z = np.cumsum(rng.uniform(-10, 10, n_points))
+
+    azimuths = rng.uniform(0, 360, n_segments)
+    dtraj_dists = np.linspace(0, 1000, n_segments + 1)
+    dtraj = make_dubious_traj(segment_lengths, azimuths, dtraj_dists)
+
+    trip_xyzdt = np.empty((n_points, 5))
+    trip_xyzdt[:, 0] = rng.uniform(6.9, 7.1, n_points)
+    trip_xyzdt[:, 1] = rng.uniform(39.9, 40.1, n_points)
+    trip_xyzdt[:, 2] = z
+    trip_xyzdt[:, 3] = rng.uniform(-100, 1100, n_points)
+    mean_dist = 1000 / (n_points - 1)
+    trip_xyzdt[:, 4] = np.cumsum(
+        rng.uniform(-0.1 * mean_dist, 1.1 * mean_dist, n_points)
+    )
+
+    # make some distances and times missing
+    for i in (3, 4):
+        n_missing = rng.integers(0, n_points + 1)
+        trip_xyzdt[rng.choice(n_points, n_missing, replace=False), i] = np.nan
+
+    dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzdt)
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    min_spacing = min(
+        trip.snapping_params.min_spacing, trip.trajectory.length / (n_points - 1)
+    )
+    for split_segment in snapped.get_inter_point_ls_lon_lat_in_travel_direction():
+        assert (
+            WGS84_GEOD.line_length(split_segment[:, 0], split_segment[:, 1])
+            >= 0.99 * min_spacing
+        )
+
+
+@pytest.mark.xfail(
+    reason="""Data contains a hard case with a trip with some detours, no distance information
+and sloppy times (often the same time for different stops) leading to initial distances
+ending up in the wrong branch of their detour.
+This is one of the few examples that currently still fail to snap with stops close
+enough to their original position with the iterative method.
+Possible solution: Use different minimum spacings calculated from stop-stop distances
+and stop-trajectory distances (currently we only have a fixed minimum spacing of 25 meters).
+This could help to get a better initial guess when times are bad.
+Or: Fix geOps routing API when skipping stops: Currently all distance information is lost
+when stops are skipped during routing. This could be fixed such that only the distances
+of the missing stops are missing.
+"""
+)
+def test_complex_trip():
+    fn = os.path.join(os.path.dirname(__file__), "complex_trip.geojson")
+    with open(fn) as handle:
+        coll = json.load(handle)
+    point_features = []
+    for feature in coll["features"]:
+        if feature["geometry"]["type"] == "LineString":
+            traj_feature = feature
+        else:
+            point_features.append(feature)
+    point_features.sort(key=lambda f: f["properties"]["index"])
+
+    dtraj = DubiousTrajectory(
+        [c + [None] for c in traj_feature["geometry"]["coordinates"]]
+    )
+    dtrip = DubiousTrajectoryTrip(
+        dtraj,
+        [
+            f["geometry"]["coordinates"] + [None, f["properties"]["time"]]
+            for f in point_features
+        ],
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    snapped.raise_invalid()

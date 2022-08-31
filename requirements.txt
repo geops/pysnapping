@@ -6,13 +6,32 @@
 #
 certifi==2021.10.8
     # via pyproj
+cvxpy==1.2.0
+    # via pysnapping (setup.py)
+ecos==2.0.10
+    # via cvxpy
 numpy==1.21.5
     # via
+    #   cvxpy
+    #   ecos
+    #   osqp
     #   pysnapping (setup.py)
     #   scipy
+    #   scs
+osqp==0.6.2.post5
+    # via cvxpy
 pyproj==3.2.1
     # via pysnapping (setup.py)
+qdldl==0.1.5.post2
+    # via osqp
 scipy==1.7.3
-    # via pysnapping (setup.py)
+    # via
+    #   cvxpy
+    #   ecos
+    #   osqp
+    #   pysnapping (setup.py)
+    #   scs
+scs==3.2.0
+    # via cvxpy
 shapely==1.8.1.post1
     # via pysnapping (setup.py)
