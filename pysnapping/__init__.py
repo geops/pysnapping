@@ -37,3 +37,4 @@ class SnappingMethod(Enum):
     trusted = "trusted"
     projected = "projected"
     iterative = "iterative"
+    fallback = "fallback"

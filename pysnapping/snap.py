@@ -811,15 +811,31 @@ class TrajectoryTrip(XYZDMixin):
         for group_indices in iter_consecutive_groups(indices):
             i_left = group_indices[0] - 1
             i_right = group_indices[-1] + 1
-            self.dists[group_indices] = fix_sequence_with_missing_values(
-                values=self.dists[group_indices],
-                v_min=self.dists[i_left] + min_spacing if i_left >= 0 else d_min,
-                v_max=self.dists[i_right] - min_spacing
-                if i_right < n_points
-                else d_max,
-                d_min=min_spacing,
-                atol=atol,
-            )
+            v_min = self.dists[i_left] + min_spacing if i_left >= 0 else d_min
+            v_max = self.dists[i_right] - min_spacing if i_right < n_points else d_max
+            # Due to tolerance in previous steps, it can happen in rare cases that
+            # we run slightly out of space (still within tolerances). In that case, we just apply
+            # equidistant placement.
+            if v_max < v_min:
+                if len(group_indices) > 1:
+                    raise ValueError(
+                        f"tolerance {atol} was too high for min_spacing {min_spacing}"
+                    )
+                v_mean = (v_max + v_min) / 2
+                v_mean = min(max(v_mean, d_min), d_max)
+                v_min = v_max = v_mean
+            try:
+                self.dists[group_indices] = fix_sequence_with_missing_values(
+                    values=self.dists[group_indices],
+                    v_min=v_min,
+                    v_max=v_max,
+                    d_min=min_spacing,
+                    atol=atol,
+                )
+            except NoSolution:
+                self.dists[group_indices] = np.linspace(
+                    v_min, v_max, len(group_indices)
+                )
 
     def _snap_untrusted(
         self,
@@ -845,56 +861,84 @@ class TrajectoryTrip(XYZDMixin):
         else:
             d_max = self.dists[right] - params.min_spacing
         n_points = group_slice.stop - group_slice.start
+
+        # Due to tolerances in previous steps, we can run slightly out of space.
+        # In that case, fall back to equidistant placement.
+        if d_max < d_min:
+            if n_points > 1:
+                raise ValueError(
+                    f"tolerance {params.atol_spacing} was too high "
+                    f"for min_spacing {params.min_spacing}"
+                )
+            d_mean = (d_max + d_min) / 2
+            d_mean = min(max(d_mean, self.trajectory.d_min), self.trajectory.d_max)
+            d_min = d_max = d_mean
         available_length = d_max - d_min
         required_length = (n_points - 1) * params.min_spacing
         if required_length > available_length:
-            raise SnappingError("not enough space")
-
-        # first try just projecting; if this works, we're done
-        snapped_points = self.line_fractions[group_slice].project_between_distances(
-            d_min, d_max, self.trajectory.dists
-        )
-        distances = interpolate(self.trajectory.dists, snapped_points.locations)
-
-        d_ok = partial(self.dists_ok, d_min=d_min, d_max=d_max)
-        if d_ok(distances):
-            logger.debug("projecting in forward direction succesful")
-            method = SnappingMethod.projected
-        elif reverse_order_allowed and d_ok(distances[::-1]):
-            logger.debug("projecting in reverse direction succesful")
-            method = SnappingMethod.projected
-            snapped_trip_points.reverse_order = True
-        else:
-            logger.debug("projected solution not admissible")
-            method = SnappingMethod.iterative
-            snapped_points, distances = self._snap_untrusted_iteratively(
-                group_slice=group_slice,
-                d_min=d_min,
-                d_max=d_max,
-                reverse=False,
-                convergence_accuracy=convergence_accuracy,
-                n_iter_max=n_iter_max,
-            )
-            logger.debug("forward distances: %s", distances)
+            logger.debug("fallback for slightly not enough space")
+            method = SnappingMethod.fallback
             if reverse_order_allowed:
-                # pick forward/backward solution with better sum of squared snapping distances
-                residuum = (snapped_points.cartesian_distances**2).sum()
-                alt_snapped_points, alt_distances = self._snap_untrusted_iteratively(
+                # this is such a rare case that we don't make the effort
+                # to check the reverse solution
+                logger.warning("ignoring possible reverse solution in fallback")
+            distances = np.linspace(d_min, d_max, n_points)
+            locations = self.trajectory.locate(distances)
+            coords = interpolate(self.trajectory.xyz, locations)
+            snapped_points = ProjectedPoints(
+                coords,
+                locations,
+                np.linalg.norm(coords - self.xyz[group_slice], axis=1),
+            )
+        else:
+            # first try just projecting; if this works, we're done
+            snapped_points = self.line_fractions[group_slice].project_between_distances(
+                d_min, d_max, self.trajectory.dists
+            )
+            distances = interpolate(self.trajectory.dists, snapped_points.locations)
+
+            d_ok = partial(self.dists_ok, d_min=d_min, d_max=d_max)
+            if d_ok(distances):
+                logger.debug("projecting in forward direction succesful")
+                method = SnappingMethod.projected
+            elif reverse_order_allowed and d_ok(distances[::-1]):
+                logger.debug("projecting in reverse direction succesful")
+                method = SnappingMethod.projected
+                snapped_trip_points.reverse_order = True
+            else:
+                logger.debug("projected solution not admissible")
+                method = SnappingMethod.iterative
+                snapped_points, distances = self._snap_untrusted_iteratively(
                     group_slice=group_slice,
                     d_min=d_min,
                     d_max=d_max,
-                    reverse=True,
+                    reverse=False,
                     convergence_accuracy=convergence_accuracy,
                     n_iter_max=n_iter_max,
                 )
-                logger.debug("backward distances: %s", alt_distances)
-                alt_residuum = (alt_snapped_points.cartesian_distances**2).sum()
-                logger.debug("residuum: %s", residuum)
-                logger.debug("backward residuum: %s", alt_residuum)
-                if alt_residuum < residuum:
-                    snapped_trip_points.reverse_order = True
-                    snapped_points = alt_snapped_points
-                    distances = alt_distances
+                logger.debug("forward distances: %s", distances)
+                if reverse_order_allowed:
+                    # pick forward/backward solution with better sum of squared snapping distances
+                    residuum = (snapped_points.cartesian_distances**2).sum()
+                    (
+                        alt_snapped_points,
+                        alt_distances,
+                    ) = self._snap_untrusted_iteratively(
+                        group_slice=group_slice,
+                        d_min=d_min,
+                        d_max=d_max,
+                        reverse=True,
+                        convergence_accuracy=convergence_accuracy,
+                        n_iter_max=n_iter_max,
+                    )
+                    logger.debug("backward distances: %s", alt_distances)
+                    alt_residuum = (alt_snapped_points.cartesian_distances**2).sum()
+                    logger.debug("residuum: %s", residuum)
+                    logger.debug("backward residuum: %s", alt_residuum)
+                    if alt_residuum < residuum:
+                        snapped_trip_points.reverse_order = True
+                        snapped_points = alt_snapped_points
+                        distances = alt_distances
 
         snapped_trip_points.distances[group_slice] = distances
         snapped_trip_points.snapped_points[group_slice] = snapped_points
