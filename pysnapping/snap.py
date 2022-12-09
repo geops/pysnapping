@@ -140,8 +140,7 @@ class SnappingParams(typing.NamedTuple):
     ) -> np.ndarray:
         snapping_dists = np.asarray(snapping_dists, dtype=float)
         shortest_dists = np.asarray(shortest_dists, dtype=float)
-        diff = np.abs(snapping_dists - shortest_dists)
-        return diff <= rtol * shortest_dists + atol
+        return snapping_dists <= rtol * shortest_dists + atol
 
     def trust_snapping_dists(
         self, snapping_dists: ArrayLike, shortest_dists: ArrayLike

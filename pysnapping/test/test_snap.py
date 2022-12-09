@@ -7,7 +7,12 @@ from functools import partial
 import os
 import json
 
-from pysnapping.snap import DubiousTrajectory, DubiousTrajectoryTrip, SnappingMethod
+from pysnapping.snap import (
+    DubiousTrajectory,
+    DubiousTrajectoryTrip,
+    SnappingMethod,
+    SnappingParams,
+)
 from pysnapping.linear_referencing import locate, interpolate, resample
 from pysnapping.util import get_trafo, transform_coords
 from pysnapping import EPSG4326, EPSG4978
@@ -377,3 +382,35 @@ def test_complex_trip():
     snapped = trip.snap_trip_points()
     assert not snapped.reverse_order
     snapped.raise_invalid()
+
+
+@pytest.mark.parametrize(
+    "stop_dist,expected_trusted,expected_dist",
+    (
+        (5, True, 5),  # trust and keep
+        (35, False, 35),  # don't trust but keep
+        (75, False, 0),  # don't trust, don't keep (0 is expected fallback estimate)
+    ),
+)
+def test_snapping_dists_admissible(stop_dist, expected_trusted, expected_dist):
+    real_segment_lengths = [5000]
+    start = (10, 50)
+    dtraj = make_dubious_traj(real_segment_lengths, [0], [0, 5000], start=start)
+    trip_xyzdt = np.full((2, 5), np.nan)
+
+    # put first stop 25 meters away from trajectory start
+    # in the opposite direction as trajectory runs
+    trip_xyzdt[0, :2] = offset(start, 25, 180)
+    trip_xyzdt[0, 2] = 0
+
+    # put second stop at end of trajectory (irrelevant for test)
+    trip_xyzdt[1, :3] = dtraj.xyz[1]
+
+    # set up external distance along trajectory for stops
+    trip_xyzdt[0, 3] = stop_dist
+
+    params = SnappingParams(rtol_trusted=1, atol_trusted=11, rtol_keep=2, atol_keep=15)
+    dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzdt)
+    trip = dtrip.to_trajectory_trip(snapping_params=params)
+    assert trip.dists_trusted[0] == expected_trusted
+    assert abs(trip.dists[0] - expected_dist) < 0.1  # 10 cm accuracy
