@@ -1244,7 +1244,9 @@ class SnappedTripPoints:
         )
 
     def to_geojson(
-        self, d_valids: typing.Optional[np.ndarray] = None
+        self,
+        d_valids: typing.Optional[np.ndarray] = None,
+        initial_locations: typing.Optional[Locations] = None,
     ) -> typing.Dict[str, typing.Any]:
         if d_valids is None:
             d_valids = self.trip.snapping_params.keep_snapping_dists(
@@ -1341,6 +1343,24 @@ class SnappedTripPoints:
                 trafo,
             )
         )
+
+        if initial_locations is not None:
+            initial_coords = interpolate(self.trip.trajectory.xyz, initial_locations)
+            initial_points = ProjectedPoints(
+                initial_coords,
+                initial_locations,
+                np.linalg.norm(self.trip.xyz - initial_coords, axis=1),
+            )
+            features.extend(
+                self._projected_points_to_features(
+                    initial_points,
+                    "initial point",
+                    trip_point_coords,
+                    d_valids,
+                    interpolate(self.trip.trajectory.dists, initial_locations),
+                    trafo,
+                )
+            )
 
         return {
             "type": "FeatureCollection",
