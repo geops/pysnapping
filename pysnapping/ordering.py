@@ -47,7 +47,7 @@ def order_ok(
 
     if atol is None:
         atol = 0.02 * (v_max - v_min) / n_values
-    return (
+    return bool(
         values_arr[0] >= v_min - atol
         and values_arr[-1] <= v_max + atol
         and np.all(np.diff(values_arr) >= d_min_arr - atol)

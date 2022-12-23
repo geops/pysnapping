@@ -1,20 +1,21 @@
+#!/usr/bin/env python3
+
+"""The setup script."""
+
 from setuptools import setup, find_packages
 
-import os
-
-here = os.path.abspath(os.path.dirname(__file__))
-with open(os.path.join(here, "README.md")) as f:
-    README = f.read()
+with open("README.md") as readme_file:
+    readme = readme_file.read()
 
 setup(
-    name="pysnapping",
-    version="0.0",
+    python_requires=">=3.7",
     description="Snap points to a line string keeping a given order intact",
-    long_description=README,
+    long_description=readme,
     long_description_content_type="text/markdown",
-    zip_safe=False,
-    packages=find_packages(),
     include_package_data=True,
+    name="pysnapping",
+    packages=find_packages(include=["pysnapping", "pysnapping.*"]),
+    zip_safe=False,
     install_requires=[
         "shapely",
         "numpy",
