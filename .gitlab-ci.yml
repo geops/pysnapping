@@ -14,7 +14,7 @@ before_script:
   - python3 -m venv venv
   - source venv/bin/activate
   - python3 --version
-  - pip install --upgrade pip wheel setuptools
+  - pip install --upgrade pip
 
 stages:
   - build
@@ -28,9 +28,9 @@ cache:
 build_wheels:
   stage: build
   script:
-    - pip wheel -w wheels -r requirements.txt pip wheel setuptools setuptools-scm
-    - pip wheel --no-index --find-links=wheels -w wheels .
-    - pip wheel --find-links=wheels -w dev-wheels -r dev-requirements.txt
+    - pip wheel -w wheels -r requirements.txt
+    - pip wheel -w wheels --no-index --find-links=wheels .
+    - pip wheel -w dev-wheels --find-links=wheels -r dev-requirements.txt
   artifacts:
     when: on_success
     paths:

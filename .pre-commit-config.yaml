@@ -37,10 +37,10 @@ repos:
       files: '.*\.py$'
     - id: pip-compile
       name: pip-compile
-      entry: pip-compile
+      entry: pip-compile pyproject.toml
       language: python
       pass_filenames: false
-      files: 'setup\.py|requirements\.txt'
+      files: 'pyproject\.toml|requirements\.txt'
     - id: pip-compile-dev-requirements
       name: pip-compile-dev-requirements
       entry: pip-compile dev-requirements.in
