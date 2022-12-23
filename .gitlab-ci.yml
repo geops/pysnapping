@@ -28,7 +28,7 @@ cache:
 build_wheels:
   stage: build
   script:
-    - pip wheel -w wheels -r requirements.txt
+    - pip wheel -w wheels -r requirements.txt pip wheel setuptools setuptools-scm
     - pip wheel -w wheels --no-index --find-links=wheels .
     - pip wheel -w dev-wheels --find-links=wheels -r dev-requirements.txt
   artifacts:
