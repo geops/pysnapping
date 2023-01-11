@@ -112,5 +112,5 @@ to update frozen revs.
 Run tests and analyze code coverage:
 
 ```bash
-pytest --cov=pysnapping --cov-report term --cov-fail-under=50 pysnapping
+pytest --cov=pysnapping --cov-report term --cov-fail-under=85 pysnapping
 ```
