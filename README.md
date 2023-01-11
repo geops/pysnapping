@@ -18,6 +18,14 @@ Trusted points are always snapped as given by the kilometrage.
 In between trusted points, an approximate iterative scheme is used to snap all untrusted points such that
 the order or minimum spacing conditions are not violated.
 
+## Installation
+
+Install the latest stable release from PyPI with pip:
+
+```bash
+pip install pysnapping
+```
+
 ## Modules
 
 ### Linear Referencing
