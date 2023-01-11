@@ -1,0 +1,21 @@
+[project]
+name = "pysnapping"
+description = "Snap points to a line string keeping a given order intact"
+readme = "README.md"
+dependencies = [
+  "shapely",
+  "numpy",
+  "pyproj>=3.2.0",  # for defining custom CRS
+  "cvxpy",
+]
+requires-python = ">=3.7"
+dynamic = ["version"]
+
+[build-system]
+requires = ["setuptools>=61", "setuptools_scm[toml]>=6.2", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+
+[tool.setuptools.packages.find]
+include = ["pysnapping", "pysnapping.*"]

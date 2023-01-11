@@ -14,11 +14,12 @@ before_script:
   - python3 -m venv venv
   - source venv/bin/activate
   - python3 --version
-  - pip install --upgrade pip wheel setuptools
+  - pip install --upgrade pip
 
 stages:
   - build
   - test
+  - deploy
 
 cache:
   paths:
@@ -27,9 +28,9 @@ cache:
 build_wheels:
   stage: build
   script:
-    - pip wheel -w wheels -r requirements.txt
-    - pip wheel --no-index --find-links=wheels -w wheels .
-    - pip wheel --find-links=wheels -w dev-wheels -r dev-requirements.txt
+    - pip wheel -w wheels -r requirements.txt pip "setuptools>=61" "setuptools_scm[toml]>=6.2" wheel
+    - pip wheel -w wheels --no-index --find-links=wheels .
+    - pip wheel -w dev-wheels --find-links=wheels -r dev-requirements.txt
   artifacts:
     when: on_success
     paths:
@@ -42,8 +43,8 @@ run_tests:
     - build_wheels
   script:
     - pip install --no-index --no-deps wheels/*
-    - pip install --no-index --find-links=dev-wheels pytest pytest-cov
-    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-config=setup.cfg --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=50 --junitxml=junit_coverage.xml pysnapping
+    - pip install --no-index --no-deps dev-wheels/*
+    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=50 --junitxml=junit_coverage.xml pysnapping
   coverage: '/^TOTAL.+?(\d+\%)$/'
   artifacts:
     reports:

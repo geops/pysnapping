@@ -7,10 +7,9 @@ Snap points to a line string keeping a given order intact.
 ### Installation
 
 ```bash
-python3 -m venv env
-source venv/bin/activate
-pip install -U pip wheel setuptools
-pip install -r requirements.txt -r dev-requirements.txt -e .
+python3.7 -m venv env
+env/bin/pip install -U pip
+env/bin/pip install -r requirements.txt -r dev-requirements.txt -e .
 ```
 
 Keep env activated for all following instructions.
@@ -28,15 +27,3 @@ pre-commit autoupdate
 ```
 
 to update frozen revs.
-
-### Dependencies
-
-Edit [setup.py](setup.py) and/or [dev-requirements.in](dev-requirements.in)
-then run:
-
-```bash
-pip-compile
-pip-compile dev-requirements.in
-```
-
-Check in changed files to repo.
