@@ -9,7 +9,33 @@ dependencies = [
   "cvxpy",
 ]
 requires-python = ">=3.7"
+license = {file = "LICENSE"}
+authors = [{name = "Alexander Held | geOps", email = "alexander.held@geops.com"}]
+maintainers = [{name = "Alexander Held | geOps", email = "alexander.held@geops.com"}]
+keywords = [
+  "snapping",
+  "projecting",
+  "linear referencing",
+  "order",
+  "linestring",
+  "GIS",
+  "quadratic programming",
+  "GTFS",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dynamic = ["version"]
+
+[project.urls]
+homepage = "https://github.com/geops/pysnapping"
+geOps = "https://geops.com/en"
 
 [build-system]
 requires = ["setuptools>=61", "setuptools_scm[toml]>=6.2", "wheel"]

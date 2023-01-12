@@ -44,7 +44,7 @@ run_tests:
   script:
     - pip install --no-index --no-deps wheels/*
     - pip install --no-index --no-deps dev-wheels/*
-    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=50 --junitxml=junit_coverage.xml pysnapping
+    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=85 --junitxml=junit_coverage.xml pysnapping
   coverage: '/^TOTAL.+?(\d+\%)$/'
   artifacts:
     reports:
