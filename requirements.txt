@@ -10,7 +10,7 @@ cvxpy==1.2.2
     # via pysnapping (pyproject.toml)
 ecos==2.0.11
     # via cvxpy
-numpy==1.21.6
+numpy==1.22.0
     # via
     #   cvxpy
     #   ecos
