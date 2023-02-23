@@ -643,7 +643,7 @@ class TrajectoryTrip(XYZDMixin):
                 # Put everything equidistantly along the whole trajectory.
                 # We ignore the possibility that the trajectory might be reversed
                 # until this case really pops up.
-                logger.info(
+                logger.debug(
                     "falling back to equidistant placement for trajectory that is too short"
                 )
                 self.dists_trusted.fill(True)
