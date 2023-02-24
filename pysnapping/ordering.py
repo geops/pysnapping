@@ -99,10 +99,13 @@ def fix_sequence(
     elif required_length >= available_length - atol * n_values:
         # just enough space to fit all values
         # this could be a hard case for the solver, so we treat it seperately
-        solution = np.empty_like(values_arr)
-        solution.fill(v_min)
-        scale = available_length / required_length
-        solution[1:] += scale * np.cumsum(d_min_arr)
+        if required_length:
+            solution = np.empty_like(values_arr)
+            solution.fill(v_min)
+            scale = available_length / required_length
+            solution[1:] += scale * np.cumsum(d_min_arr)
+        else:
+            solution = np.linspace(v_min, v_max, n_values)
         return solution
     elif order_ok(values, v_min, v_max, d_min, atol):
         return values_arr

@@ -44,6 +44,18 @@ def test_fix_sequence_different_d_min_just_fit():
     assert order_ok(fixed_values, v_min, v_max, d_min)
 
 
+def test_fix_sequence_zero_d_min_just_fit():
+    values = [1, 3, 2]
+    d_min = [0, 0]
+    v_min = 1.9
+    v_max = 2.1
+    assert not order_ok(values, v_min, v_max, d_min)
+    fixed_values = fix_sequence(values, v_min, v_max, d_min, atol=0.1)
+    expected = [1.9, 2, 2.1]
+    assert_allclose(fixed_values, expected, rtol=0, atol=0.02)
+    assert order_ok(fixed_values, v_min, v_max, d_min)
+
+
 def test_fix_sequence_different_d_min_solver():
     values = [1, 3, 2, 7, 8]
     d_min = [1, 1, 1.2, 3.4]
