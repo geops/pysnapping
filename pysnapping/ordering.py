@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def _check_params(
     values: ArrayLike, v_min: float, v_max: float, d_min: ArrayLike
-) -> typing.Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     values_arr = np.asarray(values, dtype=float)
     d_min_arr = np.asarray(d_min, dtype=float)
     if d_min_arr.ndim == 0:

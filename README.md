@@ -83,7 +83,7 @@ Create a virtual environment, then install frozen requirements, dev-requirements
 and this library in editable mode:
 
 ```bash
-python3.7 -m venv env
+python3.9 -m venv env
 . env/bin/activate
 pip install -U pip
 pip install -r requirements.txt -r dev-requirements.txt -e .
