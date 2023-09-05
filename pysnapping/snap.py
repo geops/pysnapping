@@ -951,7 +951,7 @@ class TrajectoryTrip(XYZDMixin):
         reverse: bool,
         convergence_accuracy: float,
         n_iter_max: int,
-    ) -> typing.Tuple[ProjectedPoints, np.ndarray]:
+    ) -> tuple[ProjectedPoints, np.ndarray]:
         """Snap points with untrusted distances iteratively.
 
         Start with an admissible initial guess for the snapped points.
@@ -1178,7 +1178,7 @@ class SnappedTripPoints:
                 f"snapped point too far away from original point:\n{debug}\n"
             )
 
-    def get_inter_point_trajectories(self) -> typing.List[Trajectory]:
+    def get_inter_point_trajectories(self) -> list[Trajectory]:
         """Split the trajectory at the snapped points.
 
         Return sub-trajectories between consecutive pairs of trip points
@@ -1202,7 +1202,7 @@ class SnappedTripPoints:
         crs: pyproj.CRS = EPSG4978,
         strict_axis_order: bool = False,
         without_z: bool = False,
-    ) -> typing.List[np.ndarray]:
+    ) -> list[np.ndarray]:
         """Split the trajectory at the snapped points.
 
         Return linestring coords between consecutive pairs of trip points
@@ -1247,7 +1247,7 @@ class SnappedTripPoints:
         self,
         d_valids: typing.Optional[np.ndarray] = None,
         initial_locations: typing.Optional[Locations] = None,
-    ) -> typing.Dict[str, typing.Any]:
+    ) -> dict[str, typing.Any]:
         if d_valids is None:
             d_valids = self.trip.snapping_params.keep_snapping_dists(
                 self.snapping_distances, self.shortest_distances
@@ -1396,7 +1396,13 @@ class SnappedTripPoints:
                     "valid": bool(d_valid),
                 },
             }
-            for i, (coords, dist_to_tp, dist_along_traj, method, d_valid,) in enumerate(
+            for i, (
+                coords,
+                dist_to_tp,
+                dist_along_traj,
+                method,
+                d_valid,
+            ) in enumerate(
                 zip(
                     tcoords,
                     points.cartesian_distances,

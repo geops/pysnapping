@@ -19,7 +19,7 @@ def get_trafo(
     from_crs: pyproj.CRS, to_crs: pyproj.CRS = EPSG4978, strict_axis_order: bool = False
 ) -> typing.Callable[
     [np.ndarray, np.ndarray, np.ndarray],
-    typing.Tuple[np.ndarray, np.ndarray, np.ndarray],
+    tuple[np.ndarray, np.ndarray, np.ndarray],
 ]:
     return pyproj.Transformer.from_crs(
         from_crs,
@@ -32,7 +32,7 @@ def transform_coords(
     coords: ArrayLike,
     trafo: typing.Callable[
         [np.ndarray, np.ndarray, np.ndarray],
-        typing.Tuple[np.ndarray, np.ndarray, np.ndarray],
+        tuple[np.ndarray, np.ndarray, np.ndarray],
     ],
     out: typing.Optional[np.ndarray] = None,
     skip_z_output: bool = False,
@@ -86,7 +86,7 @@ def simplify_2d_keep_rest(coords: ArrayLike, tolerance) -> np.ndarray:
 
 def iter_consecutive_groups(
     integers: typing.Iterable[int],
-) -> typing.Iterator[typing.List[int]]:
+) -> typing.Iterator[list[int]]:
     """Iterate over groups of consecutive integers."""
     return (
         [item[1] for item in group]
@@ -99,10 +99,8 @@ def iter_consecutive_groups(
 
 def array_chk(
     data: ArrayLike,
-    shape_template: typing.Tuple[
-        typing.Union[
-            None, int, typing.Tuple[typing.Optional[int], typing.Optional[int]]
-        ],
+    shape_template: tuple[
+        typing.Union[None, int, tuple[typing.Optional[int], typing.Optional[int]]],
         ...,
     ],
     chk_finite: bool = False,

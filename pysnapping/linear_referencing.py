@@ -103,7 +103,7 @@ def location_to_single_segment(
     fraction: float,
     prefer_zero_fraction: bool,
     last_segment: int,
-) -> typing.Tuple[int, float]:
+) -> tuple[int, float]:
     n_segments = to_vertex - from_vertex
     if n_segments == 1:
         segment = from_vertex
@@ -516,7 +516,7 @@ def substrings(
     data: np.ndarray,
     starts: Locations,
     ends: Locations,
-) -> typing.List[np.ndarray]:
+) -> list[np.ndarray]:
     """Extract substring copies of data interpeted as a tensor-valued linestring.
 
     This is a generalization of shapely.ops.substring.
