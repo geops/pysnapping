@@ -1045,6 +1045,14 @@ class TrajectoryTrip(XYZDMixin):
 
             regions[:, 0] = separators[:-1] + half_min_spacing
             regions[:, 1] = separators[1:] - half_min_spacing
+            # If two consecutive points come very close to min_spacing, the right region boundary
+            # can fall slightly before the left region boundary due to numerical noise. This overlap
+            # can however accumulate significantly during iterations. So we have to fix that.
+            collapsed_regions = regions[:, 1] < regions[:, 0]
+            regions[collapsed_regions] = regions[collapsed_regions].mean(
+                axis=1, keepdims=True
+            )
+
             reproject = np.nonzero(
                 np.logical_not(optimal) & np.any(regions != projected_regions, axis=1)
             )[0]
@@ -1056,7 +1064,7 @@ class TrajectoryTrip(XYZDMixin):
             # then we could take the global solution for this point instead of projecting again
             for i in reproject:
                 logger.debug(
-                    "iter %d: reprojecting %d to [%.3f km, %.3f km]",
+                    "iter %d: reprojecting %d to [%.6f km, %.6f km]",
                     n_iter,
                     i,
                     *(regions[i] * 1e-3),
