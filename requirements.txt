@@ -4,14 +4,17 @@
 #
 #    pip-compile pyproject.toml
 #
-certifi==2023.7.22
+certifi==2023.11.17
     # via pyproj
-cvxpy==1.3.2
+clarabel==0.6.0
+    # via cvxpy
+cvxpy==1.4.2
     # via pysnapping (pyproject.toml)
 ecos==2.0.12
     # via cvxpy
-numpy==1.25.2
+numpy==1.26.3
     # via
+    #   clarabel
     #   cvxpy
     #   ecos
     #   osqp
@@ -22,21 +25,21 @@ numpy==1.25.2
     #   shapely
 osqp==0.6.3
     # via cvxpy
-pyproj==3.6.0
+pybind11==2.11.1
+    # via cvxpy
+pyproj==3.6.1
     # via pysnapping (pyproject.toml)
 qdldl==0.1.7.post0
     # via osqp
-scipy==1.11.2
+scipy==1.12.0
     # via
+    #   clarabel
     #   cvxpy
     #   ecos
     #   osqp
     #   qdldl
     #   scs
-scs==3.2.3
+scs==3.2.4.post1
     # via cvxpy
-shapely==2.0.1
+shapely==2.0.2
     # via pysnapping (pyproject.toml)
-
-# The following packages are considered to be unsafe in a requirements file:
-# setuptools

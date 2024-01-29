@@ -1,7 +1,7 @@
 fail_fast: false
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.4.0
+  rev: v4.5.0
   hooks:
     - id: no-commit-to-branch
     - id: check-merge-conflict
@@ -12,28 +12,12 @@ repos:
     - id: check-builtin-literals
     - id: check-case-conflict
     - id: check-docstring-first
-- repo: https://github.com/pycqa/flake8
-  rev: 6.1.0
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.1.14
   hooks:
-    - id: flake8
-      name: flake8
-      entry: flake8
-      language: python
-      files: '.*\.py$'
-      pass_filenames: false
-- repo: https://github.com/psf/black
-  rev: 23.7.0
-  hooks:
-    - id: black
-      name: black
-      entry: black
-      language: python
-      files: '.*\.py$'
-- repo: https://github.com/asottile/pyupgrade
-  rev: v3.10.1
-  hooks:
-    - id: pyupgrade
-      args: [--py39-plus]
+    - id: ruff
+      args: [ --fix ]
+    - id: ruff-format
 - repo: local
   hooks:
     - id: mypy
@@ -41,7 +25,8 @@ repos:
       entry: mypy
       language: python
       pass_filenames: false
-      files: '.*\.py$'
+      always_run: true
+      args: ["-p", "pysnapping"]
     - id: pip-compile
       name: pip-compile
       entry: pip-compile pyproject.toml

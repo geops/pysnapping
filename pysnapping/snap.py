@@ -626,7 +626,7 @@ class TrajectoryTrip(XYZDMixin):
             atol=atol,
         )
 
-    def _fix_distances(  # noqa: old code too complex (needs refactoring)
+    def _fix_distances(
         self,
         missing: np.ndarray,
         available: np.ndarray,
@@ -753,7 +753,6 @@ class TrajectoryTrip(XYZDMixin):
                 logger.debug(
                     "estimating distances from times failed (not enough unique times)"
                 )
-                pass
             else:
                 logger.debug(
                     "estimated %d/%d distances from times",
