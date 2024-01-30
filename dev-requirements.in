@@ -4,3 +4,4 @@ pytest-cov
 pre-commit
 pip-tools
 mypy
+numpy

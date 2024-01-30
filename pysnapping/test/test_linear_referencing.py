@@ -272,9 +272,7 @@ def test_project_to_all_segments(simple_ls):
     # project point 0 with pen and paper to get the expected result:
     # (all other points are not affected)
     expected_distances[0] = 0.1 * np.sin(45 / 180 * np.pi)
-    expected_locations.fractions[0] = (
-        -0.5 * 2**0.5 + expected_distances[0]
-    ) / 2**0.5
+    expected_locations.fractions[0] = (-0.5 * 2**0.5 + expected_distances[0]) / 2**0.5
     expected_proj_points[0] = expected_locations.fractions[0]
 
     assert_locations_eq(projected.locations, expected_locations)
@@ -318,9 +316,12 @@ def test_project_to_substring(simple_ls):
         # fractions and segments are shifted when first taking a substring, so we only compare
         # coords and distances
         msg = f"works for {d1}, {d2}, {extrapolate}"
-        assert_allclose(
-            result.cartesian_distances, expected_result.cartesian_distances
-        ), msg
+        (
+            assert_allclose(
+                result.cartesian_distances, expected_result.cartesian_distances
+            ),
+            msg,
+        )
         assert_allclose(result.coords, expected_result.coords), msg
 
     # explicit test to also check segment indices and fractions

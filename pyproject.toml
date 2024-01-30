@@ -45,3 +45,42 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["pysnapping", "pysnapping.*"]
+
+[tool.ruff]
+select = [
+    "F", # pyflakes
+    "E",  # pycodestyle
+    "W", # pycodestyle
+    "UP",  # pyupgrade
+    "C901",  # mccabe
+    "YTT",  # no sys.version tuple comparisons
+    "ASYNC",  # no obviously blocking io in corotine
+    "G",  #  flake8-logging-format
+    "PIE",  # unnecessary statements
+    "SLOT",   # str, tuple, namedtuple subclasses need __slots__
+    "FIX003",  # line contains XXX
+]
+ignore = [
+    "E501",  # line too long
+    "UP038",  # see https://github.com/astral-sh/ruff/issues/7871
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.mypy]
+ignore_missing_imports = true
+plugins = [
+    "numpy.typing.mypy_plugin",
+]
+install_types = true
+non_interactive = true
+
+[tool.coverage.run]
+branch = true
+source = [
+    "pysnapping"
+]
+omit = [
+    "pysnapping/test/*",
+]
