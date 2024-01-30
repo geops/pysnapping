@@ -52,7 +52,7 @@ select = [
     "E",  # pycodestyle
     "W", # pycodestyle
     "UP",  # pyupgrade
-    "C901",  # mccape
+    "C901",  # mccabe
     "YTT",  # no sys.version tuple comparisons
     "ASYNC",  # no obviously blocking io in corotine
     "G",  #  flake8-logging-format
@@ -62,9 +62,11 @@ select = [
 ]
 ignore = [
     "E501",  # line too long
-    "C901",  # too complex
     "UP038",  # see https://github.com/astral-sh/ruff/issues/7871
 ]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
 
 [tool.mypy]
 ignore_missing_imports = true

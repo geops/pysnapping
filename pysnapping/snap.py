@@ -626,7 +626,8 @@ class TrajectoryTrip(XYZDMixin):
             atol=atol,
         )
 
-    def _fix_distances(
+    # this method will be removed soon, so fixing C901 is not worth the effort
+    def _fix_distances(  # noqa: C901
         self,
         missing: np.ndarray,
         available: np.ndarray,
