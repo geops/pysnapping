@@ -6,7 +6,6 @@ dependencies = [
   "shapely",
   "numpy",
   "pyproj>=3.2.0",  # for defining custom CRS
-  "cvxpy",
 ]
 requires-python = ">=3.9"
 license = {file = "LICENSE"}

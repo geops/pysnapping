@@ -1,3 +1,4 @@
+import typing
 import numpy as np
 from numpy.testing import assert_allclose
 import pytest
@@ -16,6 +17,10 @@ from pysnapping.snap import (
 from pysnapping.linear_referencing import locate, interpolate, resample
 from pysnapping.util import get_trafo, transform_coords
 from pysnapping import EPSG4326, EPSG4978
+
+
+if typing.TYPE_CHECKING:
+    from numpy.typing import ArrayLike
 
 
 WGS84_GEOD = pyproj.Geod(ellps="WGS84")
@@ -44,6 +49,30 @@ def segment_lengths_to_dists(segment_lengths, start=0):
     dists = np.full((len(segment_lengths) + 1,), start)
     dists[1:] += np.cumsum(segment_lengths)
     return dists
+
+
+@pytest.mark.parametrize(
+    "values,d_min,d_max,min_spacing,ok",
+    [
+        ([], 0, 0, 10, True),
+        ([np.NaN], 0, 0, 10, True),
+        ([0], 0, 0, 10, True),
+        ([1], 0, 1, 10, True),
+        ([1], 0, 1 - 1e-6, 10, False),
+        ([np.NaN, 1, np.NaN], 0, 2, 1 - 1e-6, True),
+        ([np.NaN, 1, np.NaN], 0, 1.9, 1, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 1, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 0.5, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 1 / 3 - 1e-6, True),
+        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 - 1e-6, True),
+        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 + 1e-6, False),
+    ],
+)
+def test_spacing_ok(
+    values: "ArrayLike", d_min: float, d_max: float, min_spacing: float, ok: bool
+) -> None:
+    params = SnappingParams(min_spacing=min_spacing)
+    assert params.spacing_ok(values, d_min, d_max) == ok
 
 
 # test around the entire earth with different orientations

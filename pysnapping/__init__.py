@@ -25,10 +25,6 @@ class SnappingError(ValueError):
     pass
 
 
-class NoSolution(ValueError):
-    pass
-
-
 class ExtrapolationError(ValueError):
     pass
 
@@ -36,5 +32,3 @@ class ExtrapolationError(ValueError):
 class SnappingMethod(Enum):
     trusted = "trusted"
     projected = "projected"
-    iterative = "iterative"
-    fallback = "fallback"
