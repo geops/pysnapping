@@ -273,6 +273,115 @@ class ProjectionTarget:
         return self.get_line_fractions(point_coords).project(**kwargs)
 
 
+class SegmentFractions:
+    """LineFractions that have been sliced to a substring and clipped to segments.
+
+    Axis order is point, segment, cartesian dimension. `fractions` have a stub cartesian
+    dimension axis of length 1 so they can be easily multiplied with point data.
+    `square_distances` lack the cartesian dimension axis.
+    """
+
+    line_fractions: "LineFractions"
+    segment_slice: slice
+    fractions: np.ndarray
+    projected_points: np.ndarray
+    square_distances: np.ndarray
+
+    def __init__(
+        self,
+        line_fractions: "LineFractions",
+        segment_slice: slice,
+        fractions: np.ndarray,
+        projected_points: np.ndarray,
+        square_distances: np.ndarray,
+    ) -> None:
+        self.line_fractions = line_fractions
+        self.segment_slice = segment_slice
+        self.fractions = fractions
+        self.projected_points = projected_points
+        self.square_distances = square_distances
+
+    def project(
+        self,
+        out: typing.Optional[ProjectedPoints] = None,
+    ) -> "ProjectedPoints":
+        """Project points to the closest segment each.
+
+        For each point, the projected point with the shortest distance to the point
+        wins. If there are multiple segments with the shortest distance, the segment
+        with the lowest index wins.
+
+        If `out` is given, the output is written there. Otherwise a new ProjectedPoints
+        object is created.
+        """
+        point_coords = self.line_fractions.point_coords[:, np.newaxis, :]
+
+        # Index of winning segment for each point. Ranks are squared cartesian distances
+        # (sqrt is monotone, so we get the same minimum as for cartesian distances with
+        # less computational effort)
+        segments = np.argmin(self.square_distances, axis=1)
+
+        # We need to explicitly select the points by index.
+        # If we would use `:` for the point axis, we would get a cartesian product
+        # which is not what we want. We want a specific segment for a specific point each.
+        point_indices = np.arange(len(point_coords))
+
+        # take sqrt only for winners to get cartesian distances
+        distances = self.square_distances[point_indices, segments]
+        distances **= 0.5
+        from_vertices = segments + self.segment_slice.start
+        to_vertices = from_vertices + 1
+        if out is None:
+            return ProjectedPoints(
+                self.projected_points[point_indices, segments, :],
+                Locations(
+                    from_vertices,
+                    to_vertices,
+                    self.fractions[point_indices, segments, 0],
+                ),
+                distances,
+            )
+        else:
+            out.coords[...] = self.projected_points[point_indices, segments, :]
+            out.locations.from_vertices[...] = from_vertices
+            out.locations.to_vertices[...] = to_vertices
+            out.locations.fractions[...] = self.fractions[point_indices, segments, 0]
+            out.cartesian_distances[...] = distances
+            return out
+
+    def project_to_all_segments(
+        self, square_radii: np.ndarray
+    ) -> list["ProjectedPoints"]:
+        """Project each point to all segments within a radius.
+
+        `square_radii` are the squared radii for the points.
+
+        Return a `ProjectedPoints` object for every point including projections to all
+        segments with shortest distance to the point <= the corresponding radius.
+        The projected points are ordered by segment index for each point.
+        """
+        if len(square_radii) != len(self.fractions):
+            raise ValueError(
+                f"{len(square_radii)} is a bad number of radii "
+                f"(expected {len(self.fractions)})"
+            )
+
+        mask = self.square_distances <= square_radii[:, np.newaxis]
+
+        pps_list: list[ProjectedPoints] = []
+        for i in range(len(square_radii)):
+            segments = np.nonzero(mask[i])[0]
+            from_vertices = segments + self.segment_slice.start
+            to_vertices = from_vertices + 1
+            pps = ProjectedPoints(
+                self.projected_points[i, segments, :],
+                Locations(from_vertices, to_vertices, self.fractions[i, segments, 0]),
+                self.square_distances[i, segments] ** 0.5,
+            )
+            pps_list.append(pps)
+        return pps_list
+
+
 class LineFractions:
     """Fractions of points projected to infinite lines running through each segment of a target."""
 
@@ -307,38 +416,30 @@ class LineFractions:
             fractions=self.fractions[key],
         )
 
-    def project(
+    def slice_and_clip(
         self,
         head_segment: int = 0,
         head_fraction: float = 0.0,
         tail_segment: int = -1,
         tail_fraction: float = 1.0,
-        out: typing.Optional[ProjectedPoints] = None,
-    ) -> ProjectedPoints:
-        """Project points to the linestring or a substring thereof.
+    ) -> SegmentFractions:
+        """Clip fractions to segments of the linestring or a substring therof.
 
-        Clip fractions to segments and get ProjectedPoints for best clipped fractions.
-
-        For each point, the projected point with the shortest distance to the point wins.
-        If there are multiple segments with the shortest distance, the segment
-        with the lowest index wins.
-
-        `head_segment/fraction` and `tail_segment/fraction` control the clipping at the start/end.
-        Default corresponds to clipping to the linestring boundaries.
-        Use a negative value for `head_fraction` to allow projecting to an elongated head.
-        `float("-inf")` can be used to simulate an infinite head.
-        You can also use a value greater than 0.0 to shorten the head
-        (useful for projecting to substrings).
-        `head_segment` is the index of the head segment. All segments before `head_segment`
-        are ignored in the minimum search.
+        `head_segment/fraction` and `tail_segment/fraction` control the clipping at the
+        start/end. Default corresponds to clipping to the linestring boundaries. Use a
+        negative value for `head_fraction` to allow projecting to an elongated head.
+        `float("-inf")` can be used to simulate an infinite head. You can also use a
+        value greater than 0.0 to shorten the head (useful for projecting to
+        substrings). `head_segment` is the index of the head segment. All segments
+        before `head_segment` are ignored in the minimum search.
 
         Similar for `tail_segment/fraction`.
 
-        If tail lies before head, the substring to project on will be point-like from head to head
-        and all points will end up there.
+        If tail lies before head, the substring to project on will be point-like from
+        head to head and all points will end up there after clipping.
 
-        The head/tail segment cannot be short if elongating head/tail (simplify the linestring to
-        ensure this).
+        The head/tail segment cannot be short if elongating head/tail (simplify the
+        linestring to ensure this).
         """
         if head_fraction < 0.0 and self.target.short_segment_mask[head_segment]:
             raise ExtrapolationError(
@@ -365,7 +466,6 @@ class LineFractions:
         fractions = self.fractions[:, segment_slice, np.newaxis]
         segment_dirs = self.target.segment_dirs[np.newaxis, segment_slice, :]
         segment_starts = self.target.segment_starts[np.newaxis, segment_slice, :]
-        del self  # protection against using unsliced data
 
         low: typing.Union[float, np.ndarray]
         high: typing.Union[float, np.ndarray]
@@ -385,39 +485,25 @@ class LineFractions:
 
         projected_points = fractions * segment_dirs
         projected_points += segment_starts
-        # ranks are squared cartesian distances (sqrt is monotone, so we get the same minimum
-        # as for cartesian distances with less computational effort)
         tmp = point_coords - projected_points
         tmp *= tmp
-        ranks = tmp.sum(2)
-        # index of winning segment for each point
-        segments = np.argmin(ranks, axis=1)
+        square_distances = tmp.sum(2)
+        return SegmentFractions(
+            self, segment_slice, fractions, projected_points, square_distances
+        )
 
-        # We need to explicitly select the points by index.
-        # If we would use `:` for the point axis, we would get a cartesian product
-        # which is not what we want. We want a specific segment for a specific point each.
-        point_indices = np.arange(len(point_coords))
-
-        # take sqrt only for winners to get cartesian distances
-        distances = ranks[point_indices, segments]
-        distances **= 0.5
-        from_vertices = segments + head_segment
-        to_vertices = from_vertices + 1
-        if out is None:
-            return ProjectedPoints(
-                projected_points[point_indices, segments, :],
-                Locations(
-                    from_vertices, to_vertices, fractions[point_indices, segments, 0]
-                ),
-                distances,
-            )
-        else:
-            out.coords[...] = projected_points[point_indices, segments, :]
-            out.locations.from_vertices[...] = from_vertices
-            out.locations.to_vertices[...] = to_vertices
-            out.locations.fractions[...] = fractions[point_indices, segments, 0]
-            out.cartesian_distances[...] = distances
-            return out
+    def project(
+        self,
+        head_segment: int = 0,
+        head_fraction: float = 0.0,
+        tail_segment: int = -1,
+        tail_fraction: float = 1.0,
+        out: typing.Optional[ProjectedPoints] = None,
+    ) -> ProjectedPoints:
+        """Convenience method for `slice_and_clip` followed by `project`."""
+        return self.slice_and_clip(
+            head_segment, head_fraction, tail_segment, tail_fraction
+        ).project(out)
 
     def project_between_distances(
         self,
