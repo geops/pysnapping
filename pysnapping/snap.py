@@ -63,8 +63,8 @@ class SnappingParams(typing.NamedTuple):
 
     If an external location is trusted, snapping will occur exactly to this location. In
     between trusted locations, points will be snapped minimizing the sum of square
-    distances with the given boundary conditions (individual maximum snapping radii for
-    the points, minimum spacing along the trajectory).
+    snapping distances with the given boundary conditions (individual maximum snapping
+    radii for the points, minimum spacing along the trajectory).
 
     All distances are in meters.
 
@@ -75,7 +75,7 @@ class SnappingParams(typing.NamedTuple):
     locations will be distrusted.
 
     `rtol_trusted`, `atol_trusted`:
-    Let `d_min` be the minimum distance of the point to the trajectory and `d` the
+    Let `d_min` be the shortest distance of the point to the trajectory and `d` the
     distance of the point to the external location on the trajectory. If `d <=
     rtol_trusted * d_min + atol_trusted`, the external location is trusted (if not
     untrusted by other conditions).
@@ -85,9 +85,17 @@ class SnappingParams(typing.NamedTuple):
     attempted to all parts of the trajectory that are within a radius of `rtol_snap *
     d_min + atol_snap`.
 
+    `max_shortest_distance`
+    The maximum shortest distance between any trip point and the trajectory. If this is
+    exceeded, snapping is not attempted at all.
+
+    `sampling_step`:
+    The sampling distance step along the trajectory for candidate snapping targets.
+
     `reverse_order_allowed`:
     Whether to also try reversing the trajectory. Only applies if no external locations
-    are trusted.
+    are given. The solution with minimum sum of square snapping distances will be
+    applied.
     """
 
     min_spacing: float = 25.0
@@ -95,6 +103,8 @@ class SnappingParams(typing.NamedTuple):
     atol_trusted: float = 10.0
     rtol_snap: float = 2.5
     atol_snap: float = 300.0
+    max_shortest_distance: float = 1000.0
+    sampling_step: float = 5.0
     reverse_order_allowed: bool = True
 
     def spacing_ok(
