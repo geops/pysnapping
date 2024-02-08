@@ -570,6 +570,9 @@ class SlicedLineFractions:
         self.closest_fractions = closest_fractions
         self.max_fractions = max_fractions
 
+    def __len__(self) -> int:
+        return len(self.segment_indices)
+
     def discretize(
         self, segment_lengths: np.ndarray, sampling_step: float
     ) -> "ProjectedPoints":

@@ -1,5 +1,4 @@
 import typing
-import itertools
 import logging
 from functools import lru_cache
 
@@ -82,19 +81,6 @@ def simplify_2d_keep_rest(coords: ArrayLike, tolerance) -> np.ndarray:
     if shapely_output.shape[1] != 3:
         raise RuntimeError("shapely simplify lost the z dimension")
     return coords_arr[shapely_output[:, 2].astype(int)]
-
-
-def iter_consecutive_groups(
-    integers: typing.Iterable[int],
-) -> typing.Iterator[list[int]]:
-    """Iterate over groups of consecutive integers."""
-    return (
-        [item[1] for item in group]
-        for _, group in itertools.groupby(
-            enumerate(integers),
-            lambda t: t[0] - t[1],
-        )
-    )
 
 
 def array_chk(

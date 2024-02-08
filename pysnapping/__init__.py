@@ -31,4 +31,4 @@ class ExtrapolationError(ValueError):
 
 class SnappingMethod(Enum):
     trusted = "trusted"
-    projected = "projected"
+    routed = "routed"

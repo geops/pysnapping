@@ -398,7 +398,7 @@ def test_select_balls_straight_ls() -> None:
     assert_allclose(slf1.max_fractions, [0.2], rtol=0, atol=5e-6)
 
     # 2. point/radis: ball should not hit the linestring
-    assert len(slf2.segment_indices) == 0
+    assert len(slf2) == 0
     assert slf2.point_index == 1
 
     # 3. point/radius: ball should intersect with segment 1 from fraction 0.5 to 1
@@ -412,7 +412,7 @@ def test_select_balls_straight_ls() -> None:
     # 4. point/radius: ball intersects the inifinite lines running through segments 1
     # and 3 but the intersection points are all outside the segment bounds, so we expect
     # an empty result for the interseciton with the linestring
-    assert len(slf4.segment_indices) == 0
+    assert len(slf4) == 0
     assert slf4.point_index == 3
 
 
