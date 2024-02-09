@@ -32,3 +32,4 @@ class ExtrapolationError(ValueError):
 class SnappingMethod(Enum):
     trusted = "trusted"
     routed = "routed"
+    fallback = "fallback"

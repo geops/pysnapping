@@ -23,6 +23,7 @@ from .util import (
     transform_coords,
     array_chk,
     simplify_2d_keep_rest,
+    cumulative_min_and_argmin,
 )
 from . import (
     SnappingError,
@@ -97,6 +98,11 @@ class SnappingParams(typing.NamedTuple):
     Whether to also try reversing the trajectory. Only applies if no external locations
     are given. The solution with minimum sum of square snapping distances will be
     applied.
+
+    `short_trajectory_fallback`:
+    If enabled and the trajectory is too short to snap all points with `min_spacing` and
+    a numerical tolerance considering `sampling_step`, points will be placed
+    equidistantly along the whole trajectory.
     """
 
     min_spacing: float = 25.0
@@ -104,21 +110,27 @@ class SnappingParams(typing.NamedTuple):
     atol_trusted: float = 10.0
     rtol_snap: float = 2.5
     atol_snap: float = 300.0
-    max_shortest_distance: float = 1000.0
+    max_shortest_distance: float = 500.0
     sampling_step: float = 5.0
     reverse_order_allowed: bool = True
+    short_trajectory_fallback: bool = True
 
     def spacing_ok(
         self,
         values: ArrayLike,
         d_min: float,
         d_max: float,
+        consider_sampling_accuracy: bool = False,
     ) -> bool:
         """Check if all non-NaN values are in [d_min, d_max] with the correct spacing.
 
         Spacing for NaN values is also considered. For example: If there are three NaN
         values between two non-NaN values, the spacing between the non-NaN values has to
         be at least `4 * self.min_spacing`.
+
+        If `consider_sampling_accuracy` is set to `True`, an extra spacing of `2.01 *
+        sampling_step` is considered. This will ensure that the numerical solution can
+        be found if the mathematical solution exists.
         """
         if d_max < d_min:
             raise ValueError(
@@ -127,17 +139,21 @@ class SnappingParams(typing.NamedTuple):
 
         values_arr = np.asarray(values, dtype=float)
 
-        # padding to treat NaNs at the boundary, d_min, d_max and self.min_spacing in an
+        min_spacing = self.min_spacing
+        if consider_sampling_accuracy:
+            min_spacing += 2.01 * self.sampling_step
+
+        # padding to treat NaNs at the boundary, d_min, d_max and min_spacing in an
         # elegant way
         padded_values = np.empty(len(values_arr) + 2)
-        padded_values[0] = d_min - self.min_spacing
+        padded_values[0] = d_min - min_spacing
         padded_values[1:-1] = values_arr
-        padded_values[-1] = d_max + self.min_spacing
+        padded_values[-1] = d_max + min_spacing
         del values_arr  # prevent accidental usage
 
         non_nan_indices = np.nonzero(np.logical_not(np.isnan(padded_values)))[0]
         min_spacing_arr = np.diff(non_nan_indices).astype(float)
-        min_spacing_arr *= self.min_spacing
+        min_spacing_arr *= min_spacing
 
         # bool to ensure builtin bool (and not numpy bool)
         return bool(np.all(np.diff(padded_values[non_nan_indices]) >= min_spacing_arr))
@@ -280,7 +296,10 @@ class DubiousTrajectoryTrip(XYZDMixin):
             else:
                 resampled = True
         if not resampled:
+            logger.debug("discarding trip distances (could not resample)")
             trip_dists.fill(np.nan)
+        else:
+            logger.debug("resampled trip distances")
 
         return TrajectoryTrip(trajectory=traj, xyzd=trip_xyzd)
 
@@ -416,7 +435,9 @@ class TrajectoryTrip(XYZDMixin):
         self._line_fractions = None
         self._projected_points = None
 
-    def snap_trip_points(self, params: SnappingParams) -> "SnappedTripPoints":
+    def snap_trip_points(
+        self, params: SnappingParams = DEFAULT_SNAPPING_PARAMS
+    ) -> "SnappedTripPoints":
         """Snap trip points to the trajectory.
 
         See `SnappingParams` for an explanation how the snapping is done and how it can
@@ -427,27 +448,36 @@ class TrajectoryTrip(XYZDMixin):
         ):
             raise SnappingError(
                 "at least one shortest distance between a point and the trajectory is "
-                "greater than %g meters",
-                params.max_shortest_distance,
+                f"greater than {params.max_shortest_distance:g} meters",
             )
-        trusted_ppoints_list = self.snap_trusted(params)
-        methods = np.array(
-            [
-                SnappingMethod.trusted if ppoints is not None else SnappingMethod.routed
-                for ppoints in trusted_ppoints_list
-            ],
-            dtype=object,
+        fallback = False
+        reverse_order_allowed = params.reverse_order_allowed and bool(
+            np.all(np.isnan(self.dists))
         )
-
-        # use a different name for the same list object to reflect altered type hint
-        # (cannot contain `None`s any more)
-        ppoints_list = self.set_untrusted_candidates_inplace(
-            params, trusted_ppoints_list
-        )
-
-        reverse_order_allowed = bool(
-            params.reverse_order_allowed and np.all(np.isnan(self.dists))
-        )
+        logger.debug("reverse order allowed: %s", reverse_order_allowed)
+        try:
+            trusted_ppoints_list = self.snap_trusted(params)
+        except SnappingError:
+            if params.short_trajectory_fallback:
+                methods = np.full(len(self), SnappingMethod.fallback, dtype=object)
+                ppoints_list = self.snap_fallback(params, reverse_order_allowed)
+                params = params._replace(min_spacing=0)
+                fallback = True
+            else:
+                raise
+        else:
+            methods = np.array(
+                [
+                    SnappingMethod.trusted
+                    if ppoints is not None
+                    else SnappingMethod.routed
+                    for ppoints in trusted_ppoints_list
+                ],
+                dtype=object,
+            )
+            ppoints_list = self.set_untrusted_candidates_inplace(
+                params, trusted_ppoints_list
+            )
 
         # list of (ppoints, cost, reverse_order) tuples for forward and backward
         # solution
@@ -458,6 +488,7 @@ class TrajectoryTrip(XYZDMixin):
         except SnappingError as error:
             forward_error = error
             if not reverse_order_allowed:
+                assert not fallback, "fallback solution should always be found"
                 raise
         else:
             results.append(forward_result)
@@ -469,18 +500,20 @@ class TrajectoryTrip(XYZDMixin):
                 )
             except SnappingError as backward_error:
                 if not results:
+                    assert not fallback, "fallback solution should always be found"
                     raise backward_error from forward_error
             else:
                 results.append((reversed_ppoints[::-1], reversed_cost, True))
 
         ppoints, cost, reverse_order = min(results, key=itemgetter(1))
 
-        rms = (cost / len(self)) ** 0.5
+        rms_residuum = (cost / len(self)) ** 0.5
 
         logger.debug(
-            "Found solution with RMS residuum of %g meters. Reversed: %s",
-            rms,
+            "Found solution with RMS residuum of %g meters. Reversed: %s. Fallback: %s",
+            rms_residuum,
             reverse_order,
+            fallback,
         )
 
         return SnappedTripPoints(
@@ -500,7 +533,10 @@ class TrajectoryTrip(XYZDMixin):
         for each trusted point.
         """
         traj_spacing_ok = partial(
-            params.spacing_ok, d_min=self.trajectory.d_min, d_max=self.trajectory.d_max
+            params.spacing_ok,
+            d_min=self.trajectory.d_min,
+            d_max=self.trajectory.d_max,
+            consider_sampling_accuracy=True,
         )
         ppoints_list: list[typing.Optional[ProjectedPoints]] = [None] * len(self)
         if traj_spacing_ok(self.dists):
@@ -518,7 +554,7 @@ class TrajectoryTrip(XYZDMixin):
                 self.projected_points.cartesian_distances[trusted_mask],
             )
             logger.debug(
-                "snapping distance is OK for %d / %d points with a distance",
+                "snapping distance is trusted for %d / %d points with a distance",
                 trusted_sub_mask.sum(),
                 n_non_nan,
             )
@@ -540,16 +576,14 @@ class TrajectoryTrip(XYZDMixin):
                 ppoints_list[i_global] = ppoints
         else:
             logger.debug("spacing of distances is not OK, untrusting all distances")
-            # if the order was not ok, it can still be bad after untrusting all points
+            # if the spacing was not ok, it can still be bad after untrusting all points
             # since the total length can be too short for the points
             untrusted_dists = np.full_like(self.dists, np.NaN)
             if not traj_spacing_ok(untrusted_dists):
                 raise SnappingError(
-                    "trajectory of length %g is too short for %d points with "
-                    "min_spacing of %g",
-                    self.trajectory.length,
-                    len(self),
-                    params.min_spacing,
+                    f"trajectory of length {self.trajectory.length:g} is too short "
+                    f"for {len(self)} points with "
+                    f"min_spacing of {params.min_spacing:g}",
                 )
 
         return ppoints_list
@@ -578,14 +612,48 @@ class TrajectoryTrip(XYZDMixin):
         for i, sliced_lfs in zip(np.nonzero(mask)[0], sliced_lfs_list):
             if len(sliced_lfs) == 0:
                 raise SnappingError(
-                    "untrusted point %d is too far away from the trajectory",
-                    i,
+                    f"untrusted point {i} is too far away from the trajectory",
                 )
             ppoints = sliced_lfs.discretize(segment_lengths, params.sampling_step)
             assert len(ppoints), "non empty result expected for non empty sliced_lfs"
             ppoints_list[i] = ppoints
         assert all(ppoints is not None for ppoints in ppoints_list)
         return typing.cast(list[ProjectedPoints], ppoints_list)
+
+    def snap_fallback(
+        self, params: SnappingParams, reverse_order_allowed: bool
+    ) -> list[ProjectedPoints]:
+        distances_list = [
+            np.linspace(self.trajectory.d_min, self.trajectory.d_max, len(self))
+        ]
+        if reverse_order_allowed:
+            distances_list.append(distances_list[0][::-1])
+        solutions: list[ProjectedPoints] = []
+        for distances in distances_list:
+            locations = self.trajectory.locate(distances)
+            coords = interpolate(self.trajectory.xyz, locations)
+            cartesian_distances = np.linalg.norm(coords - self.xyz, axis=1)
+            max_snapping_distances = params.get_max_snapping_dists(
+                self.projected_points.cartesian_distances
+            )
+            if np.all(cartesian_distances <= max_snapping_distances):
+                ppoints = ProjectedPoints(coords, locations, cartesian_distances)
+                solutions.append(ppoints)
+        if not solutions:
+            raise SnappingError(
+                "All fallback solutions for at least one point are too far away."
+            )
+
+        n_solutions = len(solutions)
+        result: list[ProjectedPoints] = []
+        for i_point in range(len(self)):
+            ppoints = ProjectedPoints.empty(n_points=n_solutions, n_cartesian=3)
+            for i_solution in range(n_solutions):
+                ppoints[i_solution : i_solution + 1] = solutions[i_solution][
+                    i_point : i_point + 1
+                ]
+            result.append(ppoints)
+        return result
 
     def route_candidates(
         self, params: SnappingParams, ppoints_list: list[ProjectedPoints]
@@ -612,7 +680,6 @@ class TrajectoryTrip(XYZDMixin):
         The projected points for each input point have to be ordered by ascending
         position on the trajectory (not checked).
         """
-
         # implementation note: bisect does not support keys, thus we use separate lists
         # for each property instead of packing all properties into an object and using
         # one list
@@ -649,6 +716,8 @@ class TrajectoryTrip(XYZDMixin):
             reachable_traj_distances.append([])
             reachable_costs.append([])
             reachable_predecessors.append([])
+            logger.debug("routing layer %d with %d points", i_layer, n_points)
+            cum_min, cum_argmin = cumulative_min_and_argmin(prev_costs)
             for i_candidate in range(n_points):
                 traj_dist = traj_dists[i_candidate]
                 rightmost = (
@@ -657,24 +726,21 @@ class TrajectoryTrip(XYZDMixin):
                 )
                 lo = max(rightmost, 0)
                 if rightmost >= 0:
-                    try:
-                        best_prev_i_reachable_cand, best_prev_cost = min(
-                            enumerate(prev_costs[rightmost:]), key=itemgetter(1)
-                        )
-                    except ValueError as error:
-                        # minimum of empty sequence
-                        assert i_layer != 1, "first layer shall be connected"
-                        raise SnappingError(
-                            "no solution possible for given max snapping distances "
-                            "and min spacing"
-                        ) from error
+                    best_prev_cost = cum_min[rightmost]
+                    best_prev_i_reachable_cand = cum_argmin[rightmost]
                     reachable_candidates[i_layer].append(i_candidate)
                     reachable_traj_distances[i_layer].append(traj_dist)
                     reachable_costs[i_layer].append(
                         best_prev_cost + candidate_costs[i_candidate]
                     )
                     reachable_predecessors[i_layer].append(best_prev_i_reachable_cand)
-        assert reachable_candidates[-1], "last layer shall be connected"
+            if not reachable_candidates[i_layer]:
+                assert i_layer != last_layer, "last layer shall be connected"
+                raise SnappingError(
+                    "no solution possible for given max snapping distances "
+                    "and min spacing (empty admissible candidates for point at "
+                    f"index {i_layer - 1}"
+                )
 
         path = self.reconstruct_path(
             ppoints_list, reachable_candidates, reachable_predecessors
