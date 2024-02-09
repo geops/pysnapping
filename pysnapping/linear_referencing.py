@@ -481,10 +481,10 @@ class LineFractions:
                     self,
                     i,
                     # empty array if m is False
-                    np.array(m * [0], dtype=int),
-                    np.array(m * [0.0]),
-                    np.array(m * [0.5]),
-                    np.array(m * [1.0]),
+                    np.array(bool(m) * [0], dtype=int),
+                    np.array(bool(m) * [0.0]),
+                    np.array(bool(m) * [0.5]),
+                    np.array(bool(m) * [1.0]),
                 )
                 for i, m in enumerate(mask)
             ]
