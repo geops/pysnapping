@@ -89,7 +89,7 @@ def test_long_segment_accuracy(lon, lat, azimuth):
     real_length = 100_000
     dtraj = make_dubious_traj([real_length], [azimuth], [0, 1], start=(lon, lat))
     # we use the trip only to get the converted trajectory
-    dtrip = DubiousTrajectoryTrip(dtraj, np.zeros((2, 5)))
+    dtrip = DubiousTrajectoryTrip(dtraj, np.zeros((2, 4)))
     trip = dtrip.to_trajectory_trip()
     # 1.1 meter deviation for 100 km segment is really more than we need
     # since typically segments in public transport data are much shorter
@@ -103,13 +103,12 @@ def test_convert_good_dists():
     )
     dubious_trip_dists = np.array([15, 37.5])
     coords = interpolate(dtraj.xy, locate(dtraj.dists, dubious_trip_dists))
-    trip_xyzdt = [
-        tuple(offset(c, 30, 90)) + (0, d, None)
-        for d, c in zip(dubious_trip_dists, coords)
+    trip_xyzd = [
+        tuple(offset(c, 30, 90)) + (0, d) for d, c in zip(dubious_trip_dists, coords)
     ]
     dtrip = DubiousTrajectoryTrip(
         trajectory=dtraj,
-        xyzdt=trip_xyzdt,
+        xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
 
@@ -122,61 +121,6 @@ def test_convert_good_dists():
     # 15 is halfway between 10 and 20, thus halfway of 0->100 = 50
     # 37.5 is 3/4 of 30->40 thus 3/4 of 1600 -> 1800 = 1750
     assert_allclose(trip.dists, [50, 1750])
-    assert np.all(trip.dists_trusted)
-
-
-def test_convert_using_times_and_dists():
-    real_segment_lengths = [100, 1500, 200, 26]
-    dtraj = make_dubious_traj(
-        real_segment_lengths,
-        [0, 15, -15, 20],
-        [None, 10, 160, None, None],
-    )
-
-    # two distance/time combinations are given, so we can interpolate and extrapolate the rest
-    dists = [None, 20, None, 150, None, None]
-    times = [300, 400, 2000, 3000, 3040, 4000]
-
-    coords = interpolate(dtraj.xy, locate(dtraj.dists, np.array(dists, dtype=float)))
-    trip_xyzdt = [
-        (tuple(offset(c, 30, 90)) if d is not None else (7, 40)) + (0, d, t)
-        for c, d, t in zip(coords, dists, times)
-    ]
-    dtrip = DubiousTrajectoryTrip(
-        trajectory=dtraj,
-        xyzdt=trip_xyzdt,
-    )
-    trip = dtrip.to_trajectory_trip()
-    # values are chosen s.th. times are metric dists x2, so time 300 -> metric dist 150,
-    # 400 -> 200 (trusted input),
-    # 2000 -> 1000,
-    # 3000 -> 1500 (trusted input),
-    # 3040 -> 1520 but too close to 1500 and since 1500 is trusted -> 1525 (min spacing 25 meters)
-    # and 4000 -> 2000 but trajectory ends at 1826.
-    assert_allclose(trip.dists, [150, 200, 1000, 1500, 1525, 1826])
-    assert np.all(trip.dists_trusted == [False, True, False, True, False, False])
-
-
-def test_convert_using_only_times():
-    length = 1000
-    dtraj = make_dubious_traj(
-        [length],
-        [0],
-        [None, None],
-    )
-
-    times = [0, 1000, 2500, 5000]
-
-    trip_xyzdt = [(7, 40, 0, None, t) for t in times]
-    dtrip = DubiousTrajectoryTrip(
-        trajectory=dtraj,
-        xyzdt=trip_xyzdt,
-    )
-    trip = dtrip.to_trajectory_trip()
-    # if no trip point distances are available,
-    # it is assumed that the trip spans the whole trajectory (1000 meters in 5000 seconds)
-    assert_allclose(trip.dists, [t / 5 for t in times])
-    assert not np.any(trip.dists_trusted)
 
 
 def test_snap_simple_forward():
@@ -186,16 +130,16 @@ def test_snap_simple_forward():
         [0],
         [None, None],
     )
-    trip_xyzdt = np.full((2, 5), np.nan)
-    trip_xyzdt[:, :3] = dtraj.xyz
+    trip_xyzd = np.full((2, 4), np.nan)
+    trip_xyzd[:, :3] = dtraj.xyz
     dtrip = DubiousTrajectoryTrip(
         trajectory=dtraj,
-        xyzdt=trip_xyzdt,
+        xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
     snapped = trip.snap_trip_points()
     assert not snapped.reverse_order
-    assert snapped.methods[0] == SnappingMethod.projected
+    assert np.all(snapped.methods == SnappingMethod.routed)
     assert_allclose(snapped.snapping_distances, 0)
     assert_allclose(snapped.shortest_distances, 0)
     assert_allclose(
@@ -214,16 +158,16 @@ def test_snap_simple_reversed():
         [0],
         [None, None],
     )
-    trip_xyzdt = np.full((2, 5), np.nan)
-    trip_xyzdt[:, :3] = dtraj.xyz[::-1]
+    trip_xyzd = np.full((2, 4), np.nan)
+    trip_xyzd[:, :3] = dtraj.xyz[::-1]
     dtrip = DubiousTrajectoryTrip(
         trajectory=dtraj,
-        xyzdt=trip_xyzdt,
+        xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
     snapped = trip.snap_trip_points()
     assert snapped.reverse_order
-    assert snapped.methods[0] == SnappingMethod.projected
+    assert np.all(snapped.methods == SnappingMethod.routed)
     assert_allclose(snapped.snapping_distances, 0)
     assert_allclose(snapped.shortest_distances, 0)
     assert_allclose(
@@ -235,31 +179,34 @@ def test_snap_simple_reversed():
     )
 
 
-def test_snap_iterative_forward():
+def test_snap_nontrivial_forward():
+    params = SnappingParams(min_spacing=20, sampling_step=0.5)
     length = 1000
     dtraj = make_dubious_traj(
         [length],
         [0],
         [None, None],
     )
-    trip_xyzdt = np.full((3, 5), np.nan)
-    trip_xyzdt[:2, :3] = dtraj.xyz
+    # put point 0 at 0 meters, point 1 at 1000 meters and point 2 at 900 meters so the
+    # order is messed up
+    trip_xyzd = np.full((3, 4), np.nan)
+    trip_xyzd[:2, :3] = dtraj.xyz
     real_dists = np.array([0, 1000.0])
-    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([900.0]))
+    trip_xyzd[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([900.0]))
     dtrip = DubiousTrajectoryTrip(
         trajectory=dtraj,
-        xyzdt=trip_xyzdt,
+        xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points()
+    snapped = trip.snap_trip_points(params)
     assert not snapped.reverse_order
-    assert snapped.methods[0] == SnappingMethod.iterative
+    assert np.all(snapped.methods == SnappingMethod.routed)
     assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
-    # 3 is closer to the initial guess (equidistant placement) and thus ends up at
-    # its global otpimum at 900 before 2 has a chance to move from 500 up; min dist is 25 meters
-    expected_dists = np.array([0, 875, 900.0])
+    # sum of square distances is minimized for the symmetric solution that respectes the
+    # minimum spacing
+    expected_dists = np.array([0, 940, 960], dtype=float)
     assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
-    assert_allclose(snapped.snapping_distances, [0, 125, 0], rtol=0, atol=1)
+    assert_allclose(snapped.snapping_distances, [0, 60, 60], rtol=0, atol=1)
     expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
     assert_allclose(
         TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
@@ -276,32 +223,33 @@ def test_snap_iterative_forward():
 
 
 def test_snap_iterative_backward():
+    params = SnappingParams(min_spacing=20, sampling_step=0.5)
     length = 1000
     dtraj = make_dubious_traj(
         [length],
         [0],
         [None, None],
     )
-    trip_xyzdt = np.full((3, 5), np.nan)
-    trip_xyzdt[:2, :3] = dtraj.xyz[::-1]
+    # put point 0 at 1000 meters, point 1 at 0 meters and point 2 at 500 meters so the
+    # order is messed up and the reverse solution is preferred
+    trip_xyzd = np.full((3, 4), np.nan)
+    trip_xyzd[:2, :3] = dtraj.xyz[::-1]
     real_dists = np.array([0, 1000.0])
-    trip_xyzdt[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([500.0]))
+    trip_xyzd[2:3, :3] = resample(real_dists, dtraj.xyz, np.array([500.0]))
     dtrip = DubiousTrajectoryTrip(
         trajectory=dtraj,
-        xyzdt=trip_xyzdt,
+        xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points()
+    snapped = trip.snap_trip_points(params)
     assert snapped.reverse_order
-    assert snapped.methods[0] == SnappingMethod.iterative
+    assert np.all(snapped.methods == SnappingMethod.routed)
     assert_allclose(snapped.shortest_distances, 0, rtol=0, atol=1)
-    # initial equidistant placement lets 2 and 3 fight for 250
-    # but min spacing is 25 meters
-    expected_dists = np.array([1000.0, 250 + 25 / 2, 250 - 25 / 2])
+    # sum of square distances is minimized for the symmetric solution that respectes the
+    # minimum spacing
+    expected_dists = np.array([1000.0, 260, 240])
     assert_allclose(snapped.distances, expected_dists, rtol=0, atol=1)
-    assert_allclose(
-        snapped.snapping_distances, [0, 250 + 25 / 2, 250 + 25 / 2], rtol=0, atol=1
-    )
+    assert_allclose(snapped.snapping_distances, [0, 260, 260], rtol=0, atol=1)
     expected_lon_lat = resample(real_dists, dtraj.xy, expected_dists)
     assert_allclose(
         TO_EPSG4326(snapped.snapped_points.coords, skip_z_output=True),
@@ -317,8 +265,17 @@ def test_snap_iterative_backward():
     )
 
 
-@pytest.mark.parametrize("seed", range(100))
-def test_random_garbage(seed):
+@pytest.mark.parametrize("seed", range(20))
+def test_short_trajectory_and_random_garbage(seed):
+    # set parameters such that a solution is always possible
+    params = SnappingParams(
+        # tolerate arbitrary distance of points to trajectory
+        max_shortest_distance=float("inf"),
+        # tolerate arbitrary distance of points to snapped points
+        rtol_snap=0,
+        atol_snap=float("inf"),
+    )
+
     rng = np.random.default_rng(seed=seed)
 
     if seed == 0:
@@ -343,27 +300,20 @@ def test_random_garbage(seed):
     dtraj_dists = np.linspace(0, 1000, n_segments + 1)
     dtraj = make_dubious_traj(segment_lengths, azimuths, dtraj_dists)
 
-    trip_xyzdt = np.empty((n_points, 5))
-    trip_xyzdt[:, 0] = rng.uniform(6.9, 7.1, n_points)
-    trip_xyzdt[:, 1] = rng.uniform(39.9, 40.1, n_points)
-    trip_xyzdt[:, 2] = z
-    trip_xyzdt[:, 3] = rng.uniform(-100, 1100, n_points)
-    mean_dist = 1000 / (n_points - 1)
-    trip_xyzdt[:, 4] = np.cumsum(
-        rng.uniform(-0.1 * mean_dist, 1.1 * mean_dist, n_points)
-    )
+    trip_xyzd = np.empty((n_points, 4))
+    trip_xyzd[:, 0] = rng.uniform(6.9, 7.1, n_points)
+    trip_xyzd[:, 1] = rng.uniform(39.9, 40.1, n_points)
+    trip_xyzd[:, 2] = z
+    trip_xyzd[:, 3] = rng.uniform(-100, 1100, n_points)
 
-    # make some distances and times missing
-    for i in (3, 4):
-        n_missing = rng.integers(0, n_points + 1)
-        trip_xyzdt[rng.choice(n_points, n_missing, replace=False), i] = np.nan
+    # make some distances missing
+    n_missing = rng.integers(0, n_points + 1)
+    trip_xyzd[rng.choice(n_points, n_missing, replace=False), 3] = np.nan
 
-    dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzdt)
+    dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzd)
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points()
-    min_spacing = min(
-        trip.snapping_params.min_spacing, trip.trajectory.length / (n_points - 1)
-    )
+    snapped = trip.snap_trip_points(params)
+    min_spacing = min(params.min_spacing, trip.trajectory.length / (n_points - 1))
     for split_segment in snapped.get_inter_point_ls_lon_lat_in_travel_direction():
         assert (
             WGS84_GEOD.line_length(split_segment[:, 0], split_segment[:, 1])
@@ -371,21 +321,11 @@ def test_random_garbage(seed):
         )
 
 
-@pytest.mark.xfail(
-    reason="""Data contains a hard case with a trip with some detours, no distance information
-and sloppy times (often the same time for different stops) leading to initial distances
-ending up in the wrong branch of their detour.
-This is one of the few examples that currently still fail to snap with stops close
-enough to their original position with the iterative method.
-Possible solution: Use different minimum spacings calculated from stop-stop distances
-and stop-trajectory distances (currently we only have a fixed minimum spacing of 25 meters).
-This could help to get a better initial guess when times are bad.
-Or: Fix geOps routing API when skipping stops: Currently all distance information is lost
-when stops are skipped during routing. This could be fixed such that only the distances
-of the missing stops are missing.
-"""
-)
 def test_complex_trip():
+    """Hard case that xfailed previously with the iterative solution.
+
+    It is a trip with some detours and no distance information.
+    """
     fn = os.path.join(os.path.dirname(__file__), "complex_trip.geojson")
     with open(fn) as handle:
         coll = json.load(handle)
@@ -402,44 +342,60 @@ def test_complex_trip():
     )
     dtrip = DubiousTrajectoryTrip(
         dtraj,
-        [
-            f["geometry"]["coordinates"] + [None, f["properties"]["time"]]
-            for f in point_features
-        ],
+        [f["geometry"]["coordinates"] + [None] for f in point_features],
     )
     trip = dtrip.to_trajectory_trip()
     snapped = trip.snap_trip_points()
     assert not snapped.reverse_order
-    snapped.raise_invalid()
 
 
+# 25 is default min_spacing and 5 is default sampling_step.
+# The cutoff is at 25 + 2.01 * 5 thus 35 should be too close but 36 should be good.
 @pytest.mark.parametrize(
-    "stop_dist,expected_trusted,expected_dist",
-    (
-        (5, True, 5),  # trust and keep
-        (35, False, 35),  # don't trust but keep
-        (75, False, 0),  # don't trust, don't keep (0 is expected fallback estimate)
-    ),
+    "spacing,method", ((35, SnappingMethod.routed), (36, SnappingMethod.trusted))
 )
-def test_snapping_dists_admissible(stop_dist, expected_trusted, expected_dist):
-    real_segment_lengths = [5000]
-    start = (10, 50)
-    dtraj = make_dubious_traj(real_segment_lengths, [0], [0, 5000], start=start)
-    trip_xyzdt = np.full((2, 5), np.nan)
+def test_untrust_bad_spacing(spacing: float, method: SnappingMethod) -> None:
+    length = 50
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [0, 50],
+    )
+    trip_xyzd = np.full((2, 4), np.nan)
+    trip_xyzd[:, :3] = dtraj.xyz
 
-    # put first stop 25 meters away from trajectory start
-    # in the opposite direction as trajectory runs
-    trip_xyzdt[0, :2] = offset(start, 25, 180)
-    trip_xyzdt[0, 2] = 0
+    trip_xyzd[:, 3] = [10, 10 + spacing]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzd=trip_xyzd,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert np.all(snapped.methods == method)
 
-    # put second stop at end of trajectory (irrelevant for test)
-    trip_xyzdt[1, :3] = dtraj.xyz[1]
 
-    # set up external distance along trajectory for stops
-    trip_xyzdt[0, 3] = stop_dist
+# point is on trajectory, so only atol_snap matters which is 10 by default
+@pytest.mark.parametrize(
+    "distance,method", ((9, SnappingMethod.trusted), (11, SnappingMethod.routed))
+)
+def test_untrust_too_far_away(distance: float, method: SnappingMethod) -> None:
+    length = 1000
+    dtraj = make_dubious_traj(
+        [length],
+        [0],
+        [0, 1000],
+    )
+    trip_xyzd = np.full((2, 4), np.nan)
+    trip_xyzd[:, :3] = dtraj.xyz
 
-    params = SnappingParams(rtol_trusted=1, atol_trusted=11, rtol_keep=2, atol_keep=15)
-    dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzdt)
-    trip = dtrip.to_trajectory_trip(snapping_params=params)
-    assert trip.dists_trusted[0] == expected_trusted
-    assert abs(trip.dists[0] - expected_dist) < 0.1  # 10 cm accuracy
+    trip_xyzd[:, 3] = [0, 1000 - distance]
+    dtrip = DubiousTrajectoryTrip(
+        trajectory=dtraj,
+        xyzd=trip_xyzd,
+    )
+    trip = dtrip.to_trajectory_trip()
+    snapped = trip.snap_trip_points()
+    assert not snapped.reverse_order
+    assert snapped.methods[0] == SnappingMethod.trusted
+    assert snapped.methods[1] == method
