@@ -445,18 +445,49 @@ class TrajectoryTrip(XYZDMixin):
             params, trusted_ppoints_list
         )
 
-        # TODO: try reverse solution if allowed
-        # reverse_order_allowed = bool(
-        #     params.reverse_order_allowed and np.all(np.isnan(self.dists))
-        # )
+        reverse_order_allowed = bool(
+            params.reverse_order_allowed and np.all(np.isnan(self.dists))
+        )
 
-        ppoints, cost = self.route_candidates(params, ppoints_list)
+        # list of (ppoints, cost, reverse_order) tuples for forward and backward
+        # solution
+        results: list[tuple[ProjectedPoints, float, bool]] = []
+        forward_error: typing.Optional[SnappingError] = None
+        try:
+            forward_result = self.route_candidates(params, ppoints_list) + (False,)
+        except SnappingError as error:
+            forward_error = error
+            if not reverse_order_allowed:
+                raise
+        else:
+            results.append(forward_result)
+
+        if reverse_order_allowed:
+            try:
+                reversed_ppoints, reversed_cost = self.route_candidates(
+                    params, ppoints_list[::-1]
+                )
+            except SnappingError as backward_error:
+                if not results:
+                    raise backward_error from forward_error
+            else:
+                results.append((reversed_ppoints[::-1], reversed_cost, True))
+
+        ppoints, cost, reverse_order = min(results, key=itemgetter(1))
+
+        rms = (cost / len(self)) ** 0.5
+
+        logger.debug(
+            "Found solution with RMS residuum of %g meters. Reversed: %s",
+            rms,
+            reverse_order,
+        )
 
         return SnappedTripPoints(
             trip=self,
             snapped_points=ppoints,
             methods=methods,
-            reverse_order=False,  # TODO
+            reverse_order=reverse_order,
         )
 
     def snap_trusted(
