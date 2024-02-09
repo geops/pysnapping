@@ -120,3 +120,11 @@ def array_chk(
     if chk_finite and not np.all(np.isfinite(arr)):
         raise ValueError("input not finite")
     return arr
+
+
+def cumulative_min_and_argmin(a: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+    cum_min = np.minimum.accumulate(a)
+    cum_argmin = np.arange(len(cum_min))
+    cum_argmin[1:] *= np.diff(cum_min) != 0
+    np.maximum.accumulate(cum_argmin, out=cum_argmin)
+    return cum_min, cum_argmin
