@@ -443,12 +443,12 @@ class TrajectoryTrip(XYZDMixin):
         See `SnappingParams` for an explanation how the snapping is done and how it can
         be controlled.
         """
-        if np.any(
-            self.projected_points.cartesian_distances > params.max_shortest_distance
-        ):
+        max_shortest_distance = self.projected_points.cartesian_distances.max()
+        if max_shortest_distance > params.max_shortest_distance:
             raise SnappingError(
                 "at least one shortest distance between a point and the trajectory is "
-                f"greater than {params.max_shortest_distance:g} meters",
+                f"greater than {params.max_shortest_distance:g} meters "
+                f"(maximum is {max_shortest_distance:g} meters)",
             )
         fallback = False
         reverse_order_allowed = params.reverse_order_allowed and bool(
@@ -739,7 +739,7 @@ class TrajectoryTrip(XYZDMixin):
                 raise SnappingError(
                     "no solution possible for given max snapping distances "
                     "and min spacing (empty admissible candidates for point at "
-                    f"index {i_layer - 1}"
+                    f"index {i_layer - 1})"
                 )
 
         path = self.reconstruct_path(
