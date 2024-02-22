@@ -12,11 +12,11 @@ In order to be able to work with metric parameters and to treat data with large 
 anywhere on the world, we use the [EPSG:4978](https://epsg.io/4978) Cartesian 3D geocentric coordinate system
 for the internal representation.
 
-The library aims to automatically classify kilometrage information as trusted or untrusted and fills missing
-data and corrects bogus data by interpolation/extrapolation if possible.
-Trusted points are always snapped as given by the kilometrage.
-In between trusted points, an approximate iterative scheme is used to snap all untrusted points such that
-the order or minimum spacing conditions are not violated.
+The library aims to automatically classify kilometrage information as trusted or
+untrusted. Trusted points are always snapped as given by the kilometrage. In between
+trusted points, untrusted points are snapped by minimizing the sum of square snapping
+distances among all admissible solutions within certain radii. Admissible solutions are
+those that respect the order and minimum spacing between points.
 
 ## Installation
 
@@ -34,11 +34,6 @@ The `pysnapping.linear_referencing` module contains low-level classes and functi
 linear features in N-dimensions built on top of `numpy`. This contains interpolation/extrapolation along a line string
 and data structures optimized for projecting points to substrings of a line string.
 
-### Ordering
-
-The `pysnapping.ordering` module contains functions to check and fix the order of a sequence of floats,
-respecting certain boundary conditions and spacings using the method of quadratic programming with the `cvxpy` library.
-
 ### Utils
 
 The `pysnapping.util` module contains common helper functions used in other parts of the library.
@@ -52,14 +47,16 @@ provides the classes needed to use the library.
 
 The typical usage pattern is to create a `pysnapping.snap.DubiousTrajectory` instance which represents
 a vehicle trajectory with dubious kilometrage and a `pysnapping.snap.DubiousTrajectoryTrip` `dtrip` which represents
-a trip along such a trajectory with dubious kilometrage for the stops and dubious timing information.
+a trip along such a trajectory with dubious kilometrage for the stops.
 Then `dtrip.to_trajectory_trip` can be used to get a `pysnapping.snap.TrajectorTrip` `trip` with well defined
 metric kilometrage. `trip.trajectory` then refers to a `pysnapping.snap.Trajectory` instance with well defined metric
-kilometrage. The conversion can be controlled with parameters given by a `pysnapping.snap.SnappingParams` instance.
+kilometrage.
 
-The `trip.snap_trip_points` method can be used to snap the trip points onto the trajectory, resulting in
-a `pysnapping.snap.SnappedTripPoints` instance `snapped`. Then you can e.g. split the trajectory at the stops
-using the `snapped.get_inter_point_ls_coords_in_travel_direction` method.
+The `trip.snap_trip_points` method can be used to snap the trip points onto the
+trajectory, resulting in a `pysnapping.snap.SnappedTripPoints` instance `snapped`. Then
+you can e.g. split the trajectory at the stops using the
+`snapped.get_inter_point_ls_coords_in_travel_direction` method. Snapping can be
+controlled with parameters given by a `pysnapping.snap.SnappingParams` instance.
 
 A more detailed usage example (e.g. how to process GTFS input) is planned but not available yet.
 Until then, please also check the docstrings and source code for additional usage hints/possibilities.
@@ -107,10 +104,27 @@ pre-commit autoupdate
 
 to update frozen revs.
 
-### Run tests
+### Run Tests
 
 Run tests and analyze code coverage:
 
 ```bash
 pytest --cov=pysnapping --cov-report term --cov-fail-under=85 pysnapping
 ```
+
+## Changelog
+
+### v0.2.0
+
+#### Breaking Changes
+
+* Snapping for untrusted points is now done by an exact algorithm instead of the
+  iterative approximate solution. This implies breaking changes to the parameters in
+  `snap.SnappingParams` as well as to parts of the API of the classes in the `snap`
+  module. For example: Timing information to guide the initial conditions of the
+  iterative solution is not necessary and thus not supported any more.
+* The `ordering` module has been removed since it is not needed any more.
+
+#### Other Changes:
+
+* The development toolchain now uses ruff where possible.
