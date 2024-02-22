@@ -20,6 +20,14 @@ from numpy.core.umath import clip  # type: ignore
 from . import ExtrapolationError
 
 
+def get_square_dists(
+    a: np.ndarray, b: np.ndarray, cartesian_axis: int = -1
+) -> np.ndarray:
+    tmp = a - b
+    np.square(tmp, out=tmp)
+    return tmp.sum(cartesian_axis)
+
+
 class Locations:
     """Multiple locations along a linear feature.
 
@@ -457,6 +465,188 @@ class LineFractions:
             ),
             out,
         )
+
+    def select_balls(self, square_radii: np.ndarray) -> list["SlicedLineFractions"]:
+        """Select parts of the linestring intersecting a ball around each point."""
+
+        # we can safely ignore short segments except when all segments are short (the
+        # linestring is point-like)
+        n_short = len(self.target.short_segments)
+        if n_short and n_short == len(self.target.segment_starts):
+            ls_point = self.target.segment_starts[0, np.newaxis]
+            square_distances = get_square_dists(self.point_coords, ls_point)
+            mask = square_distances <= square_radii
+            return [
+                SlicedLineFractions(
+                    self,
+                    i,
+                    # empty array if m is False
+                    np.array(bool(m) * [0], dtype=int),
+                    np.array(bool(m) * [0.0]),
+                    np.array(bool(m) * [0.5]),
+                    np.array(bool(m) * [1.0]),
+                )
+                for i, m in enumerate(mask)
+            ]
+
+        long_segments = np.nonzero(np.logical_not(self.target.short_segment_mask))[0]
+        sm2 = self.target.inv_norm_segment_dirs_squared[np.newaxis, long_segments]
+        a = self.fractions[:, long_segments]
+        q2 = get_square_dists(
+            self.target.segment_starts[np.newaxis, long_segments],
+            self.point_coords[:, np.newaxis],
+        )
+        d1 = sm2 * square_radii[:, np.newaxis]
+        d2 = sm2 * q2
+        d2 -= a**2
+        discriminant = d1 - d2
+
+        # checks where the ball intersects the line running through each segment for
+        # each point
+        mask = discriminant >= 0
+
+        ball_slices: list[SlicedLineFractions] = []
+        for i in range(len(self.point_coords)):
+            point_mask = mask[i]
+
+            closest_fractions = a[i, point_mask]
+            # min_fractions and max_fractions are the solutions for the reduced
+            # quadratic equations of intersecting the balls with the lines running
+            # through each segment for each point
+            sqrt_discriminant = discriminant[i, point_mask] ** 0.5
+            min_fractions = closest_fractions - sqrt_discriminant
+            max_fractions = closest_fractions + sqrt_discriminant
+            segment_indices = long_segments[point_mask]
+
+            # if the intersection of the ball with the line running through the segment
+            # lies completely outside the segment, we have to skip it
+            keep = np.nonzero(np.logical_and(max_fractions >= 0, min_fractions <= 1))[0]
+
+            slfs = SlicedLineFractions(
+                self,
+                i,
+                segment_indices[keep],
+                # clip to segments
+                clip(min_fractions[keep], 0, 1),
+                clip(closest_fractions[keep], 0, 1),
+                clip(max_fractions[keep], 0, 1),
+            )
+            ball_slices.append(slfs)
+        return ball_slices
+
+
+class SlicedLineFractions:
+    """Filtered and sliced LineFractions."""
+
+    __slots__ = (
+        "line_fractions",
+        "point_index",
+        "segment_indices",
+        "min_fractions",
+        "closest_fractions",
+        "max_fractions",
+    )
+
+    line_fractions: LineFractions
+    point_index: int
+    segment_indices: np.ndarray
+    min_fractions: np.ndarray
+    closest_fractions: np.ndarray
+    max_fractions: np.ndarray
+
+    def __init__(
+        self,
+        line_fractions: LineFractions,
+        point_index: int,
+        segment_indices: np.ndarray,
+        min_fractions: np.ndarray,
+        closest_fractions: np.ndarray,
+        max_fractions,
+    ) -> None:
+        self.line_fractions = line_fractions
+        self.point_index = point_index
+        self.segment_indices = segment_indices
+        self.min_fractions = min_fractions
+        self.closest_fractions = closest_fractions
+        self.max_fractions = max_fractions
+
+    def __len__(self) -> int:
+        return len(self.segment_indices)
+
+    def discretize(
+        self, segment_lengths: np.ndarray, sampling_step: float
+    ) -> "ProjectedPoints":
+        """Discretize the selection.
+
+        A `ProjectedPoints` object with the discretization is returned. The minimum
+        fraction, closest fraction and maximum fraction is guaranteed to be included in
+        the discretization for each segment. Between those, points are added to the
+        discretization, ensuring that consecutive points of the discretization for the
+        same segment are spaced at most `sampling_step` apart.
+
+        Duplicate points (if two neighboring segments are part of the selection) are
+        included in the discretization.
+
+        `segment_lengths` are the lenghts of the linestring segments in the same unit as
+        `sampling_step`. Zero segment length is only allowed for segments that are
+        considered short by the underlying target.
+        """
+
+        selected_segment_lengths = segment_lengths[self.segment_indices]
+
+        if np.any(selected_segment_lengths <= 0):
+            raise ValueError("length for non-short segments has to be > 0")
+
+        fraction_steps = sampling_step / selected_segment_lengths
+
+        left_fraction_deltas = self.closest_fractions - self.min_fractions
+        right_fraction_deltas = self.max_fractions - self.closest_fractions
+
+        n_left_samples = np.maximum(
+            np.ceil(left_fraction_deltas / fraction_steps).astype(int), 2
+        )
+        n_right_samples = np.maximum(
+            np.ceil(right_fraction_deltas / fraction_steps).astype(int), 2
+        )
+        # common sample at the closest fraction thus - 1
+        n_samples = n_left_samples + n_right_samples - 1
+        n_total_samples = n_samples.sum()
+
+        locations = Locations.empty(n_total_samples)
+
+        index_offset = 0
+        for i in range(len(self.segment_indices)):
+            left_fractions = np.linspace(
+                self.min_fractions[i], self.closest_fractions[i], n_left_samples[i]
+            )
+            right_fractions = np.linspace(
+                self.closest_fractions[i], self.max_fractions[i], n_right_samples[i]
+            )
+            locations.from_vertices[
+                index_offset : index_offset + n_samples[i]
+            ] = self.segment_indices[i]
+            locations.to_vertices[index_offset : index_offset + n_samples[i]] = (
+                self.segment_indices[i] + 1
+            )
+            locations.fractions[
+                index_offset : index_offset + n_left_samples[i]
+            ] = left_fractions
+            # 1 sample overlap thus - 1
+            locations.fractions[
+                index_offset + n_left_samples[i] - 1 : index_offset + n_samples[i]
+            ] = right_fractions
+            index_offset += n_samples[i]
+
+        coords = (
+            locations.fractions[:, np.newaxis]
+            * self.line_fractions.target.segment_dirs[locations.from_vertices]
+        )
+        coords += self.line_fractions.target.segment_starts[locations.from_vertices]
+        cartesian_distances = np.linalg.norm(
+            coords - self.line_fractions.point_coords[self.point_index, np.newaxis],
+            axis=-1,
+        )
+        return ProjectedPoints(coords, locations, cartesian_distances)
 
 
 def interpolate(data: np.ndarray, locations: Locations) -> np.ndarray:

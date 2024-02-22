@@ -14,6 +14,7 @@ from pysnapping.linear_referencing import (
     substrings,
     ProjectionTarget,
     location_to_single_segment,
+    SlicedLineFractions,
 )
 
 
@@ -337,3 +338,109 @@ def test_project_to_substring(simple_ls):
     sliced_lfracs = lfracs[[0, 0]]
     result = sliced_lfracs.project_between_distances(d1, d2, distances)
     assert_locations_eq(result.locations, make_locs([(1, 2, 0.6), (1, 2, 0.6)]))
+
+
+def test_select_balls_point_like_ls() -> None:
+    ls = np.array([[10, 20], [10, 20], [10, 20]], dtype=float)
+    target = ProjectionTarget(ls)
+    points = np.array([[13, 24], [13, 24], [1000, 20]], dtype=float)
+    line_fractions = target.get_line_fractions(points)
+
+    # (3, 4, 5) is a Pythagorean triple, so cutoff is at radius 5 for the first two
+    # points which are shifted by (3, 4)
+    square_radii = np.array([5 + 1e-6, 5 - 1e-6, 10], dtype=float) ** 2
+    sliced_line_fractions = line_fractions.select_balls(square_radii)
+
+    assert len(sliced_line_fractions) == 3
+
+    selected_list = [True, False, False]
+    for selected, slf in zip(selected_list, sliced_line_fractions):
+        assert slf.line_fractions is line_fractions
+        if selected:
+            assert len(slf.segment_indices) == 1
+            assert slf.segment_indices in (0, 1)
+            assert (
+                0
+                <= slf.min_fractions[0]
+                <= slf.closest_fractions[0]
+                <= slf.max_fractions[0]
+                <= 1
+            )
+        else:
+            assert len(slf.segment_indices) == 0
+
+
+def test_select_balls_straight_ls() -> None:
+    # include some short segments to see if they are treated correctly
+    ls = np.array([[0, 0], [0, 0], [0.5, 0], [0.5, 0], [1, 0], [1, 0]], dtype=float)
+    target = ProjectionTarget(ls)
+    points = np.array(
+        [
+            [0.1, 0],
+            [0.5, 0.25],
+            [0.5, 0.25],
+            [-10, 0.25],
+        ],
+        dtype=float,
+    )
+    line_fractions = target.get_line_fractions(points)
+
+    square_radii = np.array([1e-12, (0.25 - 1e-6) ** 2, 2 * 0.25**2, 5**2], dtype=float)
+
+    slf1, slf2, slf3, slf4 = line_fractions.select_balls(square_radii)
+
+    # 1. point/radius: x=0.1 is fraction 0.2 of segment 1
+    assert slf1.segment_indices.tolist() == [1]
+    assert slf1.point_index == 0
+    # radius of 1e-6 thus the finite tolerance
+    assert_allclose(slf1.min_fractions, [0.2], rtol=0, atol=5e-6)
+    assert_allclose(slf1.closest_fractions, [0.2], rtol=0, atol=5e-6)
+    assert_allclose(slf1.max_fractions, [0.2], rtol=0, atol=5e-6)
+
+    # 2. point/radis: ball should not hit the linestring
+    assert len(slf2) == 0
+    assert slf2.point_index == 1
+
+    # 3. point/radius: ball should intersect with segment 1 from fraction 0.5 to 1
+    # (closest) and segment 3 from 0 (closest) to 0.5.
+    assert slf3.segment_indices.tolist() == [1, 3]
+    assert slf3.point_index == 2
+    assert_allclose(slf3.min_fractions, [0.5, 0], rtol=0, atol=1e-10)
+    assert_allclose(slf3.closest_fractions, [1, 0], rtol=0, atol=1e-10)
+    assert_allclose(slf3.max_fractions, [1, 0.5], rtol=0, atol=1e-10)
+
+    # 4. point/radius: ball intersects the inifinite lines running through segments 1
+    # and 3 but the intersection points are all outside the segment bounds, so we expect
+    # an empty result for the interseciton with the linestring
+    assert len(slf4) == 0
+    assert slf4.point_index == 3
+
+
+def test_discretize_selection(simple_ls) -> None:
+    target = ProjectionTarget(simple_ls)
+    points = np.array([[0, 1.5]], dtype=float)
+    line_fractions = target.get_line_fractions(points)
+    slfs = SlicedLineFractions(
+        line_fractions=line_fractions,
+        point_index=0,
+        segment_indices=np.array([0, 2]),
+        min_fractions=np.array([0.1, 0.2]),
+        closest_fractions=np.array([0.45, 0.2]),
+        max_fractions=np.array([0.9, 0.2]),
+    )
+    segment_lengths = np.array([10, 0, 100], dtype=float)
+    projected_points = slfs.discretize(
+        segment_lengths=segment_lengths, sampling_step=1 - 1e-6
+    )
+    assert projected_points.locations.from_vertices.tolist() == 8 * [0] + 3 * [2]
+    assert projected_points.locations.to_vertices.tolist() == 8 * [1] + 3 * [3]
+    assert_allclose(
+        projected_points.locations.fractions,
+        np.linspace(0.1, 0.45, 4).tolist()
+        + np.linspace(0.45, 0.9, 5)[1:].tolist()
+        + 3 * [0.2],
+    )
+    # segment 0 lies on y = x
+    assert_allclose(projected_points.coords[:8, 1], projected_points.coords[:8, 0])
+
+    assert_allclose(projected_points.coords[8:], 3 * [[2.2, 0.8]])

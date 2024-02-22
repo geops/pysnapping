@@ -6,40 +6,11 @@
 #
 certifi==2023.11.17
     # via pyproj
-clarabel==0.6.0
-    # via cvxpy
-cvxpy==1.4.2
-    # via pysnapping (pyproject.toml)
-ecos==2.0.12
-    # via cvxpy
 numpy==1.26.3
     # via
-    #   clarabel
-    #   cvxpy
-    #   ecos
-    #   osqp
     #   pysnapping (pyproject.toml)
-    #   qdldl
-    #   scipy
-    #   scs
     #   shapely
-osqp==0.6.3
-    # via cvxpy
-pybind11==2.11.1
-    # via cvxpy
 pyproj==3.6.1
     # via pysnapping (pyproject.toml)
-qdldl==0.1.7.post0
-    # via osqp
-scipy==1.12.0
-    # via
-    #   clarabel
-    #   cvxpy
-    #   ecos
-    #   osqp
-    #   qdldl
-    #   scs
-scs==3.2.4.post1
-    # via cvxpy
 shapely==2.0.2
     # via pysnapping (pyproject.toml)

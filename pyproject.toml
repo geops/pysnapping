@@ -1,12 +1,11 @@
 [project]
 name = "pysnapping"
-description = "Snap points to a line string keeping a given order intact"
+description = "Snap points to a line string keeping a given order or spacing intact"
 readme = "README.md"
 dependencies = [
   "shapely",
   "numpy",
   "pyproj>=3.2.0",  # for defining custom CRS
-  "cvxpy",
 ]
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
@@ -19,8 +18,8 @@ keywords = [
   "order",
   "linestring",
   "GIS",
-  "quadratic programming",
   "GTFS",
+  "kilometrage",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",

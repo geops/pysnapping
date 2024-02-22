@@ -1,5 +1,4 @@
 import typing
-import itertools
 import logging
 from functools import lru_cache
 
@@ -84,19 +83,6 @@ def simplify_2d_keep_rest(coords: ArrayLike, tolerance) -> np.ndarray:
     return coords_arr[shapely_output[:, 2].astype(int)]
 
 
-def iter_consecutive_groups(
-    integers: typing.Iterable[int],
-) -> typing.Iterator[list[int]]:
-    """Iterate over groups of consecutive integers."""
-    return (
-        [item[1] for item in group]
-        for _, group in itertools.groupby(
-            enumerate(integers),
-            lambda t: t[0] - t[1],
-        )
-    )
-
-
 def array_chk(
     data: ArrayLike,
     shape_template: tuple[
@@ -134,3 +120,11 @@ def array_chk(
     if chk_finite and not np.all(np.isfinite(arr)):
         raise ValueError("input not finite")
     return arr
+
+
+def cumulative_min_and_argmin(a: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+    cum_min = np.minimum.accumulate(a)
+    cum_argmin = np.arange(len(cum_min))
+    cum_argmin[1:] *= np.diff(cum_min) != 0
+    np.maximum.accumulate(cum_argmin, out=cum_argmin)
+    return cum_min, cum_argmin
