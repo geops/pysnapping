@@ -20,6 +20,8 @@ keywords = [
   "GIS",
   "GTFS",
   "kilometrage",
+  "DAG",
+  "shortest path",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",

@@ -1,6 +1,6 @@
 """Linear referencing for arbitrary dimensions.
 
-An alternative to the very limited shapely linear referencing tools.
+An alternative to shapely linear referencing tools in N dimensions.
 Also suitable as an alternative to scipy.interp.interp1d when dealing with repeated x values.
 
 The vertex index axis is always expected at axis 0.
