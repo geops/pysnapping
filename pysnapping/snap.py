@@ -27,6 +27,7 @@ from .util import (
 )
 from . import (
     SnappingError,
+    BadShortestDistances,
     ExtrapolationError,
     EPSG4326,
     EPSG4978,
@@ -443,12 +444,14 @@ class TrajectoryTrip(XYZDMixin):
         See `SnappingParams` for an explanation how the snapping is done and how it can
         be controlled.
         """
-        max_shortest_distance = self.projected_points.cartesian_distances.max()
-        if max_shortest_distance > params.max_shortest_distance:
-            raise SnappingError(
-                "at least one shortest distance between a point and the trajectory is "
-                f"greater than {params.max_shortest_distance:g} meters "
-                f"(maximum is {max_shortest_distance:g} meters)",
+        bad_indices = np.nonzero(
+            self.projected_points.cartesian_distances > params.max_shortest_distance
+        )[0]
+        if bad_indices.size:
+            raise BadShortestDistances(
+                bad_indices,
+                self.projected_points.cartesian_distances,
+                params.max_shortest_distance,
             )
         fallback = False
         reverse_order_allowed = params.reverse_order_allowed and bool(
