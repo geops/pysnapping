@@ -447,7 +447,7 @@ class TrajectoryTrip(XYZDMixin):
         bad_indices = np.nonzero(
             self.projected_points.cartesian_distances > params.max_shortest_distance
         )[0]
-        if len(bad_indices):
+        if bad_indices.size:
             raise BadShortestDistances(
                 bad_indices,
                 self.projected_points.cartesian_distances,
