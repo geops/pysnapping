@@ -1,4 +1,4 @@
-image: registry.geops.de/build/bullseye-python:latest
+image: registry.geops.com/geops/gitlab-ci-dockerfiles/bullseye-python:latest
 
 variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
