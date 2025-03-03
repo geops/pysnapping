@@ -70,8 +70,7 @@ class SnappingStats:
         log_failed: bool = False,
         raise_failed: typing.Literal[True] = ...,
         **kwargs,
-    ) -> "SnappedTripPoints":
-        ...
+    ) -> "SnappedTripPoints": ...
 
     @typing.overload
     def snap_trip_points(
@@ -81,8 +80,7 @@ class SnappingStats:
         log_failed: bool = False,
         raise_failed: typing.Literal[False],
         **kwargs,
-    ) -> typing.Optional["SnappedTripPoints"]:
-        ...
+    ) -> typing.Optional["SnappedTripPoints"]: ...
 
     def snap_trip_points(
         self,

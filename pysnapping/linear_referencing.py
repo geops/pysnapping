@@ -622,15 +622,15 @@ class SlicedLineFractions:
             right_fractions = np.linspace(
                 self.closest_fractions[i], self.max_fractions[i], n_right_samples[i]
             )
-            locations.from_vertices[
-                index_offset : index_offset + n_samples[i]
-            ] = self.segment_indices[i]
+            locations.from_vertices[index_offset : index_offset + n_samples[i]] = (
+                self.segment_indices[i]
+            )
             locations.to_vertices[index_offset : index_offset + n_samples[i]] = (
                 self.segment_indices[i] + 1
             )
-            locations.fractions[
-                index_offset : index_offset + n_left_samples[i]
-            ] = left_fractions
+            locations.fractions[index_offset : index_offset + n_left_samples[i]] = (
+                left_fractions
+            )
             # 1 sample overlap thus - 1
             locations.fractions[
                 index_offset + n_left_samples[i] - 1 : index_offset + n_samples[i]

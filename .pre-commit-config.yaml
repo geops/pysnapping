@@ -1,7 +1,7 @@
 fail_fast: false
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.5.0
+  rev: v5.0.0
   hooks:
     - id: no-commit-to-branch
     - id: check-merge-conflict
@@ -13,11 +13,20 @@ repos:
     - id: check-case-conflict
     - id: check-docstring-first
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.1.14
+  rev: v0.9.9
   hooks:
     - id: ruff
       args: [ --fix ]
     - id: ruff-format
+- repo: https://github.com/astral-sh/uv-pre-commit
+  rev: 0.6.3
+  hooks:
+    - id: pip-compile
+      args: [pyproject.toml, -o, requirements.txt, -p, "3.9"]
+      files: ^(pyproject.toml|requirements.txt)$
+    - id: pip-compile
+      args: [dev-requirements.in, -o, dev-requirements.txt, -p, "3.9"]
+      files: ^(dev\-)?requirements.(txt|in)$
 - repo: local
   hooks:
     - id: mypy
@@ -27,15 +36,3 @@ repos:
       pass_filenames: false
       always_run: true
       args: ["-p", "pysnapping"]
-    - id: pip-compile
-      name: pip-compile
-      entry: pip-compile pyproject.toml
-      language: python
-      pass_filenames: false
-      files: 'pyproject\.toml|requirements\.txt'
-    - id: pip-compile-dev-requirements
-      name: pip-compile-dev-requirements
-      entry: pip-compile dev-requirements.in
-      language: python
-      pass_filenames: false
-      files: '(dev-)?requirements\.(in|txt)'
