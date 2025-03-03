@@ -15,6 +15,7 @@ from pysnapping.snap import (
     SnappingParams,
 )
 from pysnapping.linear_referencing import locate, interpolate, resample
+from pysnapping.stats import SnappingStats
 from pysnapping.util import get_trafo, transform_coords
 from pysnapping import EPSG4326, EPSG4978
 
@@ -289,6 +290,9 @@ def test_short_trajectory_and_random_garbage(seed):
         atol_snap=float("inf"),
     )
 
+    # just to get code coverage of stats module
+    stats = SnappingStats()
+
     rng = np.random.default_rng(seed=seed)
 
     if seed == 0:
@@ -325,7 +329,9 @@ def test_short_trajectory_and_random_garbage(seed):
 
     dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzd)
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points(params)
+    snapped = stats.snap_trip_points(trip, params)
+    stats.log_aggregated(prefix=f"seed {seed}: ")
+    stats.reset()
     min_spacing = min(params.min_spacing, trip.trajectory.length / (n_points - 1))
     for split_segment in snapped.get_inter_point_ls_lon_lat_in_travel_direction():
         assert (
@@ -363,11 +369,12 @@ def test_complex_trip():
 
 
 # 25 is default min_spacing and 5 is default sampling_step.
-# The cutoff is at 25 + 2.01 * 5 thus 35 should be too close but 36 should be good.
+# The cutoff is at 25 thus 24.9 should be too close but 25.1 should be good.
 @pytest.mark.parametrize(
-    "spacing,method", ((35, SnappingMethod.routed), (36, SnappingMethod.trusted))
+    "spacing,method", ((24.9, SnappingMethod.routed), (25.1, SnappingMethod.trusted))
 )
 def test_untrust_bad_spacing(spacing: float, method: SnappingMethod) -> None:
+    params = SnappingParams(atol_trusted=1e3)
     length = 50
     dtraj = make_dubious_traj(
         [length],
@@ -383,7 +390,7 @@ def test_untrust_bad_spacing(spacing: float, method: SnappingMethod) -> None:
         xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points()
+    snapped = trip.snap_trip_points(params)
     assert not snapped.reverse_order
     assert np.all(snapped.methods == method)
 
