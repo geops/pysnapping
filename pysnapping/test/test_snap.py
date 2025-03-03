@@ -72,6 +72,8 @@ def segment_lengths_to_dists(segment_lengths, start=0):
         ([0, 0, 1, np.NaN, 1, 1.001, 1.001, 10, 10], 0, 10, 0, True, False),
         ([-1e9, 1e9], -1e9, 1e9, 0, False, True),
         ([-1e9, 1e9], -1e9, 1e9, 0, True, True),
+        ([-1e9, 1e9], -1e9, 1e9, 2.01 * 5.0, False, True),
+        ([-1e9, 1e9], -1e9, 1e9, 2.01 * 5.0, True, True),
     ],
 )
 def test_spacing_ok(
