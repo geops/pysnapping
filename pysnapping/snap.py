@@ -578,7 +578,14 @@ class TrajectoryTrip(XYZDMixin):
                 )
                 ppoints_list[i_global] = ppoints
         else:
-            logger.debug("spacing of distances is not OK, untrusting all distances")
+            logger.debug(
+                "spacing of distances %s is not OK (d_min=%s, d_max=%s, "
+                "min_spacing=%s), untrusting all distances",
+                self.dists,
+                self.trajectory.d_min,
+                self.trajectory.d_max,
+                params.min_spacing,
+            )
             # if the spacing was not ok, it can still be bad after untrusting all points
             # since the total length can be too short for the points
             untrusted_dists = np.full_like(self.dists, np.NaN)
