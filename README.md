@@ -40,8 +40,13 @@ The `pysnapping.util` module contains common helper functions used in other part
 
 ### Snapping
 
-The `pysanpping.snap` module is the main entry point for users of the `pysnapping` library and
+The `pysnapping.snap` module is the main entry point for users of the `pysnapping` library and
 provides the classes needed to use the library.
+
+### Statistics
+
+The `pysnapping.stats` module provides tools to aggregate statistics about snapping
+failures and the methods used in case of success.
 
 ## Usage
 

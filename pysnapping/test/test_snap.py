@@ -15,6 +15,7 @@ from pysnapping.snap import (
     SnappingParams,
 )
 from pysnapping.linear_referencing import locate, interpolate, resample
+from pysnapping.stats import SnappingStats
 from pysnapping.util import get_trafo, transform_coords
 from pysnapping import EPSG4326, EPSG4978
 
@@ -52,27 +53,40 @@ def segment_lengths_to_dists(segment_lengths, start=0):
 
 
 @pytest.mark.parametrize(
-    "values,d_min,d_max,min_spacing,ok",
+    "values,d_min,d_max,min_spacing,consider_sampling_accuracy,ok",
     [
-        ([], 0, 0, 10, True),
-        ([np.NaN], 0, 0, 10, True),
-        ([0], 0, 0, 10, True),
-        ([1], 0, 1, 10, True),
-        ([1], 0, 1 - 1e-6, 10, False),
-        ([np.NaN, 1, np.NaN], 0, 2, 1 - 1e-6, True),
-        ([np.NaN, 1, np.NaN], 0, 1.9, 1, False),
-        ([-1, np.NaN, np.NaN, 0], -10, 10, 1, False),
-        ([-1, np.NaN, np.NaN, 0], -10, 10, 0.5, False),
-        ([-1, np.NaN, np.NaN, 0], -10, 10, 1 / 3 - 1e-6, True),
-        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 - 1e-6, True),
-        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 + 1e-6, False),
+        ([], 0, 0, 10, False, True),
+        ([np.NaN], 0, 0, 10, False, True),
+        ([0], 0, 0, 10, False, True),
+        ([1], 0, 1, 10, False, True),
+        ([1], 0, 1 - 1e-6, 10, False, False),
+        ([np.NaN, 1, np.NaN], 0, 2, 1 - 1e-6, False, True),
+        ([np.NaN, 1, np.NaN], 0, 1.9, 1, False, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 1, False, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 0.5, False, False),
+        ([-1, np.NaN, np.NaN, 0], -10, 10, 1 / 3 - 1e-6, False, True),
+        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 - 1e-6, False, True),
+        ([np.NaN, np.NaN, np.NaN], -100, 0, 50 + 1e-6, False, False),
+        ([0, 0, 1, 1, 1.001, 1.001, 10, 10], 0, 10, 0, False, True),
+        ([0, 0, 1, 1, 1.001, 1.001, 10, 10], 0, 10, 0, True, True),
+        ([0, 0, 1, np.NaN, 1, 1.001, 1.001, 10, 10], 0, 10, 0, False, True),
+        ([0, 0, 1, np.NaN, 1, 1.001, 1.001, 10, 10], 0, 10, 0, True, False),
+        ([-1e9, 1e9], -1e9, 1e9, 0, False, True),
+        ([-1e9, 1e9], -1e9, 1e9, 0, True, True),
+        ([-1e9, 1e9], -1e9, 1e9, 2.01 * 5.0, False, True),
+        ([-1e9, 1e9], -1e9, 1e9, 2.01 * 5.0, True, True),
     ],
 )
 def test_spacing_ok(
-    values: "ArrayLike", d_min: float, d_max: float, min_spacing: float, ok: bool
+    values: "ArrayLike",
+    d_min: float,
+    d_max: float,
+    min_spacing: float,
+    consider_sampling_accuracy: bool,
+    ok: bool,
 ) -> None:
     params = SnappingParams(min_spacing=min_spacing)
-    assert params.spacing_ok(values, d_min, d_max) == ok
+    assert params.spacing_ok(values, d_min, d_max, consider_sampling_accuracy) == ok
 
 
 # test around the entire earth with different orientations
@@ -276,6 +290,9 @@ def test_short_trajectory_and_random_garbage(seed):
         atol_snap=float("inf"),
     )
 
+    # just to get code coverage of stats module
+    stats = SnappingStats()
+
     rng = np.random.default_rng(seed=seed)
 
     if seed == 0:
@@ -312,7 +329,9 @@ def test_short_trajectory_and_random_garbage(seed):
 
     dtrip = DubiousTrajectoryTrip(dtraj, trip_xyzd)
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points(params)
+    snapped = stats.snap_trip_points(trip, params)
+    stats.log_aggregated(prefix=f"seed {seed}: ")
+    stats.reset()
     min_spacing = min(params.min_spacing, trip.trajectory.length / (n_points - 1))
     for split_segment in snapped.get_inter_point_ls_lon_lat_in_travel_direction():
         assert (
@@ -350,11 +369,12 @@ def test_complex_trip():
 
 
 # 25 is default min_spacing and 5 is default sampling_step.
-# The cutoff is at 25 + 2.01 * 5 thus 35 should be too close but 36 should be good.
+# The cutoff is at 25 thus 24.9 should be too close but 25.1 should be good.
 @pytest.mark.parametrize(
-    "spacing,method", ((35, SnappingMethod.routed), (36, SnappingMethod.trusted))
+    "spacing,method", ((24.9, SnappingMethod.routed), (25.1, SnappingMethod.trusted))
 )
 def test_untrust_bad_spacing(spacing: float, method: SnappingMethod) -> None:
+    params = SnappingParams(atol_trusted=1e3)
     length = 50
     dtraj = make_dubious_traj(
         [length],
@@ -370,7 +390,7 @@ def test_untrust_bad_spacing(spacing: float, method: SnappingMethod) -> None:
         xyzd=trip_xyzd,
     )
     trip = dtrip.to_trajectory_trip()
-    snapped = trip.snap_trip_points()
+    snapped = trip.snap_trip_points(params)
     assert not snapped.reverse_order
     assert np.all(snapped.methods == method)
 

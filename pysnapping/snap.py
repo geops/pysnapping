@@ -140,21 +140,26 @@ class SnappingParams(typing.NamedTuple):
 
         values_arr = np.asarray(values, dtype=float)
 
-        min_spacing = self.min_spacing
+        nan_min_spacing = self.min_spacing
         if consider_sampling_accuracy:
-            min_spacing += 2.01 * self.sampling_step
+            # extra spacing for numerical solution for untrusted points
+            nan_min_spacing += 2.01 * self.sampling_step
 
         # padding to treat NaNs at the boundary, d_min, d_max and min_spacing in an
         # elegant way
         padded_values = np.empty(len(values_arr) + 2)
-        padded_values[0] = d_min - min_spacing
+        padded_values[0] = d_min
         padded_values[1:-1] = values_arr
-        padded_values[-1] = d_max + min_spacing
+        padded_values[-1] = d_max
         del values_arr  # prevent accidental usage
 
         non_nan_indices = np.nonzero(np.logical_not(np.isnan(padded_values)))[0]
-        min_spacing_arr = np.diff(non_nan_indices).astype(float)
-        min_spacing_arr *= min_spacing
+        index_diffs = np.diff(non_nan_indices)
+        index_diffs[0] -= 1
+        index_diffs[-1] -= 1
+        min_spacing_arr = index_diffs.astype(float) * np.where(
+            index_diffs > 1, nan_min_spacing, self.min_spacing
+        )
 
         # bool to ensure builtin bool (and not numpy bool)
         return bool(np.all(np.diff(padded_values[non_nan_indices]) >= min_spacing_arr))
@@ -578,7 +583,14 @@ class TrajectoryTrip(XYZDMixin):
                 )
                 ppoints_list[i_global] = ppoints
         else:
-            logger.debug("spacing of distances is not OK, untrusting all distances")
+            logger.debug(
+                "spacing of distances %s is not OK (d_min=%s, d_max=%s, "
+                "min_spacing=%s), untrusting all distances",
+                self.dists,
+                self.trajectory.d_min,
+                self.trajectory.d_max,
+                params.min_spacing,
+            )
             # if the spacing was not ok, it can still be bad after untrusting all points
             # since the total length can be too short for the points
             untrusted_dists = np.full_like(self.dists, np.NaN)
