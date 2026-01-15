@@ -4,7 +4,7 @@ description = "Snap points to a line string keeping a given order or spacing int
 readme = "README.md"
 dependencies = [
   "shapely",
-  "numpy<2",
+  "numpy",
   "pyproj>=3.2.0",  # for defining custom CRS
 ]
 requires-python = ">=3.9"
@@ -34,6 +34,17 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[dependency-groups]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "pre-commit",
+  "pip-tools",
+  "mypy",
+  "numpy",
+  "pip",
+]
+
 [project.urls]
 homepage = "https://github.com/geops/pysnapping"
 geOps = "https://geops.com/en"
@@ -60,6 +71,7 @@ select = [
     "PIE",  # unnecessary statements
     "SLOT",   # str, tuple, namedtuple subclasses need __slots__
     "FIX003",  # line contains XXX
+    "NPY201",  # upgrade from NumPy 1.x to 2.0
 ]
 ignore = [
     "E501",  # line too long
