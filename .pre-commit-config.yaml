@@ -21,12 +21,14 @@ repos:
 - repo: https://github.com/astral-sh/uv-pre-commit
   rev: 0.6.3
   hooks:
-    - id: pip-compile
-      args: [pyproject.toml, -o, requirements.txt, -p, "3.9"]
+    - id: uv-lock
       files: ^(pyproject.toml|requirements.txt)$
-    - id: pip-compile
-      args: [dev-requirements.in, -o, dev-requirements.txt, -p, "3.9"]
-      files: ^(dev\-)?requirements.(txt|in)$
+    - id: uv-export
+      files: ^uv.lock$
+      args: [--no-dev, --output-file=requirements.txt, --no-emit-workspace]
+    - id: uv-export
+      files: ^uv.lock$
+      args: [--only-dev, --output-file=dev-requirements.txt, --no-emit-workspace]
 - repo: local
   hooks:
     - id: mypy
