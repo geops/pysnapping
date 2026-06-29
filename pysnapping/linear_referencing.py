@@ -14,9 +14,6 @@ from math import floor
 
 import numpy as np
 
-# faster than np.clip
-from numpy.core.umath import clip  # type: ignore
-
 from . import ExtrapolationError
 
 
@@ -389,7 +386,7 @@ class LineFractions:
         else:
             high = 1.0
 
-        fractions = clip(fractions, low, high)
+        fractions = np.clip(fractions, low, high)
 
         projected_points = fractions * segment_dirs
         projected_points += segment_starts
@@ -527,9 +524,9 @@ class LineFractions:
                 i,
                 segment_indices[keep],
                 # clip to segments
-                clip(min_fractions[keep], 0, 1),
-                clip(closest_fractions[keep], 0, 1),
-                clip(max_fractions[keep], 0, 1),
+                np.clip(min_fractions[keep], 0, 1),
+                np.clip(closest_fractions[keep], 0, 1),
+                np.clip(max_fractions[keep], 0, 1),
             )
             ball_slices.append(slfs)
         return ball_slices
@@ -726,14 +723,14 @@ def substrings(
     frac_start_ceil = np.ceil(frac_start)
     first = frac_start_ceil.astype(int)
     first[frac_start == frac_start_ceil] += 1
-    clip(first, starts.from_vertices, starts.to_vertices + 1, out=first)
+    np.clip(first, starts.from_vertices, starts.to_vertices + 1, out=first)
 
     # the last indices that are not convered by end interpolation/extrapolation
     frac_end = ends.get_fractional_indices()
     frac_end_floor = np.floor(frac_end)
     last = frac_end_floor.astype(int)
     last[frac_end == frac_end_floor] -= 1
-    clip(last, ends.from_vertices - 1, ends.to_vertices, out=last)
+    np.clip(last, ends.from_vertices - 1, ends.to_vertices, out=last)
 
     data_length = len(data)
     start_data = interpolate(data, starts)
