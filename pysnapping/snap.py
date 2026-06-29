@@ -593,7 +593,7 @@ class TrajectoryTrip(XYZDMixin):
             )
             # if the spacing was not ok, it can still be bad after untrusting all points
             # since the total length can be too short for the points
-            untrusted_dists = np.full_like(self.dists, np.NaN)
+            untrusted_dists = np.full_like(self.dists, np.nan)
             if not traj_spacing_ok(untrusted_dists):
                 raise SnappingError(
                     f"trajectory of length {self.trajectory.length:g} is too short "

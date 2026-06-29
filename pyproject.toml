@@ -4,7 +4,7 @@ description = "Snap points to a line string keeping a given order or spacing int
 readme = "README.md"
 dependencies = [
   "shapely",
-  "numpy<2",
+  "numpy~=2.0",  # for vectorized operations
   "pyproj>=3.2.0",  # for defining custom CRS
 ]
 requires-python = ">=3.9"
@@ -60,6 +60,7 @@ select = [
     "PIE",  # unnecessary statements
     "SLOT",   # str, tuple, namedtuple subclasses need __slots__
     "FIX003",  # line contains XXX
+    "NPY201",  # numpy 2.0 deprecations
 ]
 ignore = [
     "E501",  # line too long
@@ -71,9 +72,6 @@ max-complexity = 12
 
 [tool.mypy]
 ignore_missing_imports = true
-plugins = [
-    "numpy.typing.mypy_plugin",
-]
 install_types = true
 non_interactive = true
 
