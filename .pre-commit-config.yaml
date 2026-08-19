@@ -1,7 +1,7 @@
 fail_fast: false
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v5.0.0
+  rev: v6.0.0
   hooks:
     - id: no-commit-to-branch
     - id: check-merge-conflict
@@ -13,13 +13,13 @@ repos:
     - id: check-case-conflict
     - id: check-docstring-first
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.9.9
+  rev: v0.16.3
   hooks:
     - id: ruff
       args: [ --fix ]
     - id: ruff-format
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.6.3
+  rev: 0.12.5
   hooks:
     - id: pip-compile
       args: [pyproject.toml, -o, requirements.txt, -p, "3.9"]
