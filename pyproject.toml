@@ -7,7 +7,7 @@ dependencies = [
   "numpy~=2.0",  # for vectorized operations
   "pyproj>=3.2.0",  # for defining custom CRS
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {file = "LICENSE"}
 authors = [{name = "Alexander Held | geOps", email = "alexander.held@geops.com"}]
 maintainers = [{name = "Alexander Held | geOps", email = "alexander.held@geops.com"}]
@@ -64,7 +64,6 @@ select = [
 ]
 ignore = [
     "E501",  # line too long
-    "UP038",  # see https://github.com/astral-sh/ruff/issues/7871
 ]
 
 [tool.ruff.lint.mccabe]
