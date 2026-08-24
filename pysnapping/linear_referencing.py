@@ -9,7 +9,6 @@ Consider using np.moveaxis if your data is shaped differently.
 This module is rather low-level without sanity checks and conversion of array-like to array.
 """
 
-import typing
 from math import floor
 
 import numpy as np
@@ -318,7 +317,7 @@ class LineFractions:
         head_fraction: float = 0.0,
         tail_segment: int = -1,
         tail_fraction: float = 1.0,
-        out: typing.Optional[ProjectedPoints] = None,
+        out: ProjectedPoints | None = None,
     ) -> ProjectedPoints:
         """Project points to the linestring or a substring thereof.
 
@@ -372,8 +371,8 @@ class LineFractions:
         segment_starts = self.target.segment_starts[np.newaxis, segment_slice, :]
         del self  # protection against using unsliced data
 
-        low: typing.Union[float, np.ndarray]
-        high: typing.Union[float, np.ndarray]
+        low: float | np.ndarray
+        high: float | np.ndarray
         # different cases only for speeding up the default
         if head_fraction != 0.0:
             low = np.zeros((1, fractions.shape[1], 1))
@@ -430,7 +429,7 @@ class LineFractions:
         d_to: float,
         distances: np.ndarray,
         extrapolate: bool = False,
-        out: typing.Optional[ProjectedPoints] = None,
+        out: ProjectedPoints | None = None,
     ) -> ProjectedPoints:
         """Convenience method to project between two distances.
 

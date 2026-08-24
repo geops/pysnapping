@@ -64,7 +64,6 @@ select = [
 ]
 ignore = [
     "E501",  # line too long
-    "UP038",  # see https://github.com/astral-sh/ruff/issues/7871
 ]
 
 [tool.ruff.lint.mccabe]

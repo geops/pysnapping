@@ -33,7 +33,7 @@ def transform_coords(
         [np.ndarray, np.ndarray, np.ndarray],
         tuple[np.ndarray, np.ndarray, np.ndarray],
     ],
-    out: typing.Optional[np.ndarray] = None,
+    out: np.ndarray | None = None,
     skip_z_output: bool = False,
 ) -> np.ndarray:
     coords_arr = np.asarray(coords, dtype=float)
@@ -86,7 +86,7 @@ def simplify_2d_keep_rest(coords: ArrayLike, tolerance) -> np.ndarray:
 def array_chk(
     data: ArrayLike,
     shape_template: tuple[
-        typing.Union[None, int, tuple[typing.Optional[int], typing.Optional[int]]],
+        None | int | tuple[int | None, int | None],
         ...,
     ],
     chk_finite: bool = False,

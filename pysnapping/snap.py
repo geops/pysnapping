@@ -207,7 +207,7 @@ class DubiousTrajectory(XYZDMixin):
         xyzd: ArrayLike,
         crs: pyproj.CRS = EPSG4326,
         strict_axis_order: bool = False,
-        simplify_tolerance: typing.Optional[float] = None,
+        simplify_tolerance: float | None = None,
     ) -> None:
         """Initialize DubiousTrajectory.
 
@@ -223,9 +223,7 @@ class DubiousTrajectory(XYZDMixin):
             raise ValueError("coords have to be finite")
 
     @classmethod
-    def from_xyd_and_z(
-        cls, xyd: ArrayLike, z: typing.Union[float, ArrayLike] = 0.0, **kwargs
-    ):
+    def from_xyd_and_z(cls, xyd: ArrayLike, z: float | ArrayLike = 0.0, **kwargs):
         xyd_arr = np.asarray(xyd, dtype=float)
         xyzd = np.empty((xyd_arr.shape[0], 4))
         xyzd[:, :2] = xyd_arr[:, :2]
@@ -329,7 +327,7 @@ class Trajectory(XYZDMixin):
     __slots__ = ("_target",)
 
     # lazy data calculated when first needed
-    _target: typing.Optional[ProjectionTarget]
+    _target: ProjectionTarget | None
 
     def __init__(self, xyz: ArrayLike) -> None:
         xyz = array_chk(xyz, ((2, None), 3), chk_finite=True, dtype=float, copy=False)
@@ -410,8 +408,8 @@ class TrajectoryTrip(XYZDMixin):
     trajectory: Trajectory
 
     # lazy data calculated when first needed
-    _line_fractions: typing.Optional[LineFractions]
-    _projected_points: typing.Optional[ProjectedPoints]
+    _line_fractions: LineFractions | None
+    _projected_points: ProjectedPoints | None
 
     def __init__(self, trajectory: Trajectory, xyzd: ArrayLike) -> None:
         self.trajectory = trajectory
@@ -490,7 +488,7 @@ class TrajectoryTrip(XYZDMixin):
         # list of (ppoints, cost, reverse_order) tuples for forward and backward
         # solution
         results: list[tuple[ProjectedPoints, float, bool]] = []
-        forward_error: typing.Optional[SnappingError] = None
+        forward_error: SnappingError | None = None
         try:
             forward_result = self.route_candidates(params, ppoints_list) + (False,)
         except SnappingError as error:
@@ -531,9 +529,7 @@ class TrajectoryTrip(XYZDMixin):
             reverse_order=reverse_order,
         )
 
-    def snap_trusted(
-        self, params: SnappingParams
-    ) -> list[typing.Optional[ProjectedPoints]]:
+    def snap_trusted(self, params: SnappingParams) -> list[ProjectedPoints | None]:
         """Determine which points are trusted and snap them to the trajectory.
 
         See `SnappingParams` for an explanation of trusted/untrusted. The list contains
@@ -546,7 +542,7 @@ class TrajectoryTrip(XYZDMixin):
             d_max=self.trajectory.d_max,
             consider_sampling_accuracy=True,
         )
-        ppoints_list: list[typing.Optional[ProjectedPoints]] = [None] * len(self)
+        ppoints_list: list[ProjectedPoints | None] = [None] * len(self)
         if traj_spacing_ok(self.dists):
             trusted_mask = np.logical_not(np.isnan(self.dists))
             n_non_nan = trusted_mask.sum()
@@ -606,7 +602,7 @@ class TrajectoryTrip(XYZDMixin):
     def set_untrusted_candidates_inplace(
         self,
         params: SnappingParams,
-        ppoints_list: list[typing.Optional[ProjectedPoints]],
+        ppoints_list: list[ProjectedPoints | None],
     ) -> list[ProjectedPoints]:
         """Set untrusted snapping candidates inplace.
 
@@ -707,7 +703,7 @@ class TrajectoryTrip(XYZDMixin):
         reachable_costs = [[0.0]]
         # index into the lists from the previous layer for every entry in the current
         # layer for shortest path reconstruction
-        reachable_predecessors: list[list[typing.Optional[int]]] = [[None]]
+        reachable_predecessors: list[list[int | None]] = [[None]]
 
         # artificial end layer connected to all reachable candidates of the real last
         # layer
@@ -767,7 +763,7 @@ class TrajectoryTrip(XYZDMixin):
         self,
         ppoints_list: list[ProjectedPoints],
         reachable_candidates: list[list[int]],
-        reachable_predecessors: list[list[typing.Optional[int]]],
+        reachable_predecessors: list[list[int | None]],
     ) -> ProjectedPoints:
         winner_indices: list[int] = [-1] * len(ppoints_list)
         predecessor = 0
@@ -799,7 +795,7 @@ class SnappedTripPoints:
         snapped_points: ProjectedPoints,
         methods: ArrayLike,
         reverse_order: bool,
-        distances: typing.Optional[np.ndarray] = None,
+        distances: np.ndarray | None = None,
     ):
         if len(snapped_points) != len(trip):
             raise ValueError("wrong number of snapped points for trip")
