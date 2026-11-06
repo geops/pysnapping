@@ -1,24 +1,24 @@
-import typing
-import numpy as np
-from numpy.testing import assert_allclose
-import pytest
-import pyproj
-from itertools import product
-from functools import partial
-import os
 import json
+import os
+import typing
+from functools import partial
+from itertools import product
 
+import numpy as np
+import pyproj
+import pytest
+from numpy.testing import assert_allclose
+
+from pysnapping import EPSG4326, EPSG4978
+from pysnapping.linear_referencing import interpolate, locate, resample
 from pysnapping.snap import (
     DubiousTrajectory,
     DubiousTrajectoryTrip,
     SnappingMethod,
     SnappingParams,
 )
-from pysnapping.linear_referencing import locate, interpolate, resample
 from pysnapping.stats import SnappingStats
 from pysnapping.util import get_trafo, transform_coords
-from pysnapping import EPSG4326, EPSG4978
-
 
 if typing.TYPE_CHECKING:
     from numpy.typing import ArrayLike

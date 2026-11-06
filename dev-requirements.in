@@ -1,7 +1,0 @@
--c requirements.txt
-pytest
-pytest-cov
-pre-commit
-pip-tools
-mypy
-numpy

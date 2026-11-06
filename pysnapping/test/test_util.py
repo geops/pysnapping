@@ -1,7 +1,7 @@
 import numpy as np
 from numpy.testing import assert_equal
 
-from pysnapping.util import simplify_2d_keep_rest, cumulative_min_and_argmin
+from pysnapping.util import cumulative_min_and_argmin, simplify_2d_keep_rest
 
 
 def test_simplify() -> None:

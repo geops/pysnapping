@@ -1,14 +1,13 @@
-import typing
 import logging
+import typing
 from functools import lru_cache
 
 import numpy as np
+import pyproj
 from numpy.typing import ArrayLike
 from shapely.geometry import LineString
-import pyproj
 
 from . import EPSG4978
-
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +111,10 @@ def array_chk(
                     raise ValueError(
                         f"axis {i} has wrong length (expected at least {n_min}, got {n})"
                     )
-            elif n_max is not None:
-                if n > n_max:
-                    raise ValueError(
-                        f"axis {i} has wrong length (expected at most {n_max}, got {n})"
-                    )
+            elif n_max is not None and n > n_max:
+                raise ValueError(
+                    f"axis {i} has wrong length (expected at most {n_max}, got {n})"
+                )
     if chk_finite and not np.all(np.isfinite(arr)):
         raise ValueError("input not finite")
     return arr

@@ -1,8 +1,8 @@
-from dataclasses import dataclass, field
-from enum import Enum
+import logging
 import typing
 from collections import Counter
-import logging
+from dataclasses import dataclass, field
+from enum import Enum
 
 from pysnapping import SnappingError, SnappingMethod
 

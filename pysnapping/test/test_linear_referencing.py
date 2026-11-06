@@ -2,19 +2,19 @@ from functools import partial
 from itertools import product
 
 import numpy as np
+import pytest
 from numpy import array as arr
 from numpy.testing import assert_allclose
-import pytest
 
 from pysnapping import ExtrapolationError
 from pysnapping.linear_referencing import (
-    locate,
     Locations,
+    ProjectionTarget,
+    SlicedLineFractions,
+    locate,
+    location_to_single_segment,
     resample,
     substrings,
-    ProjectionTarget,
-    location_to_single_segment,
-    SlicedLineFractions,
 )
 
 

@@ -1,4 +1,4 @@
-fail_fast: false
+fail_fast: true
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0
@@ -13,26 +13,31 @@ repos:
     - id: check-case-conflict
     - id: check-docstring-first
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.16.3
+  rev: v0.17.4
   hooks:
     - id: ruff
       args: [ --fix ]
     - id: ruff-format
 - repo: https://github.com/astral-sh/uv-pre-commit
-  rev: 0.12.5
+  rev: 0.13.7
   hooks:
-    - id: pip-compile
-      args: [pyproject.toml, -o, requirements.txt, -p, "3.13"]
-      files: ^(pyproject.toml|requirements.txt)$
-    - id: pip-compile
-      args: [dev-requirements.in, -o, dev-requirements.txt, -p, "3.13"]
-      files: ^(dev\-)?requirements.(txt|in)$
+    - id: uv-lock
+      files: ^pyproject.toml|uv.lock$
 - repo: local
   hooks:
     - id: mypy
       name: mypy
-      entry: mypy
-      language: python
+      # gitlab job syncs explicitly without building extensions
+      # and for local dev we assume synced
+      entry: uv run --no-sync mypy
+      # We need installed dependencies for mypy, so we can't use an isolated env. This
+      # could be fixed by using ty instead which is capable of resolving dependencies on
+      # its own (mypy and pyright can't do that).
+      language: system
+      # don't pass file names, so we detect errors in B when only A changed but B
+      # imports A
       pass_filenames: false
+      # always run instead of a python file filter, so we detect errors in B when A gets
+      # deleted but B imports A
       always_run: true
       args: ["-p", "pysnapping"]
