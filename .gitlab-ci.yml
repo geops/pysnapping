@@ -10,6 +10,8 @@ variables:
   # use uv python to get more recent patch releases than from the debian image
   UV_PYTHON_PREFERENCE: "only-managed"
   XDG_CACHE_HOME: "${CI_PROJECT_DIR}/.cache/"
+  # keep managed pythons in the cached directory (uv stores them outside its cache by default)
+  UV_PYTHON_INSTALL_DIR: "${XDG_CACHE_HOME}/uv-python"
   LC_ALL: "C.UTF-8"
   LANG: "C.UTF-8"
   # for printing version
