@@ -20,10 +20,10 @@ those that respect the order and minimum spacing between points.
 
 ## Installation
 
-Install the latest stable release from PyPI with pip:
+Add the latest stable release from PyPI to your project with uv:
 
 ```bash
-pip install pysnapping
+uv add pysnapping
 ```
 
 ## Modules
@@ -80,31 +80,25 @@ See [our GitHub page](https://github.com/geops) for contact details.
 
 ### Editable Installation
 
-Clone this repo and enter the corresponding directory.
-Create a virtual environment, then install frozen requirements, dev-requirements
-and this library in editable mode:
+Clone this repo and enter the corresponding directory. Then run:
 
 ```bash
-python3.13 -m venv env
-. env/bin/activate
-pip install -U pip
-pip install -r requirements.txt -r dev-requirements.txt -e .
+uv sync
 ```
 
-Keep env activated for all following instructions.
 
 ### Pre-Commit Hooks
 
 Enable pre-commit hooks:
 
 ```bash
-pre-commit install
+uv run pre-commit install
 ```
 
 From time to time (not automated yet) run
 
 ```bash
-pre-commit autoupdate
+uv run pre-commit autoupdate
 ```
 
 to update frozen revs.
@@ -114,7 +108,23 @@ to update frozen revs.
 Run tests and analyze code coverage:
 
 ```bash
-pytest --cov=pysnapping --cov-report term --cov-fail-under=85 pysnapping
+uv run pytest --cov=pysnapping --cov-report term --cov-fail-under=85 pysnapping
+```
+
+### Build release for PyPI
+
+Make sure to add a git tag first and push it to geOps gitlab and github.
+
+Install `build` once:
+
+```bash
+uv tool install build
+```
+
+Then run
+
+```bash
+pyproject-build
 ```
 
 ## Changelog

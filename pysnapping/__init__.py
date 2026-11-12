@@ -1,8 +1,8 @@
 import typing
 from enum import Enum
 
-import pyproj
 import numpy as np
+import pyproj
 
 if typing.TYPE_CHECKING:
     from numpy.typing import ArrayLike

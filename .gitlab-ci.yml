@@ -1,10 +1,30 @@
 image: registry.geops.com/geops/gitlab-ci-dockerfiles/trixie-python:latest
 
+stages:
+  - test
+
 variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
-  XDG_CACHE_HOME: "$CI_PROJECT_DIR/.cache/"
+  # Fail instead of updating uv.lock if it is out of sync with pyproject.toml.
+  UV_LOCKED: "1"
+  UV_NO_EDITABLE: "1"
+  # use uv python to get more recent patch releases than from the debian image
+  UV_PYTHON_PREFERENCE: "only-managed"
+  XDG_CACHE_HOME: "${CI_PROJECT_DIR}/.cache/"
+  # keep managed pythons in the cached directory (uv stores them outside its cache by default)
+  UV_PYTHON_INSTALL_DIR: "${XDG_CACHE_HOME}/uv-python"
   LC_ALL: "C.UTF-8"
   LANG: "C.UTF-8"
+  # for printing version
+  PACKAGE_NAME: pysnapping
+
+cache:
+  # key just that cache does not grow unbounded
+  key:
+    files:
+      - uv.lock
+      - .pre-commit-config.yaml
+  paths:
+    - .cache
 
 default:
   before_script:
@@ -12,41 +32,24 @@ default:
     - mkdir -p ~/.ssh
     - echo -e "Host *\nStrictHostKeyChecking no\n\n" > ~/.ssh/config
     - echo "$GITLAB_PIPELINES_KEY" | tr -d '\r' | ssh-add - > /dev/null
-    - python3 -m venv venv
-    - source venv/bin/activate
-    - python3 --version
-    - pip install --upgrade pip
+    - uv --version
+    - uv cache dir
+    - uv --preview-features=cache-size cache size --human
+    # upgrade cached python to latest patch release (if not cached, other uv commands
+    # will install the latest patch release and cache it)
+    - uv python upgrade
+    # install package and print the version (as seen be the CI) that is actually used in
+    # the job (might come from uv cache) for debugging possible cache issues
+    - uv run python -c "from importlib.metadata import version; print('${PACKAGE_NAME} version as seen by CI (might miss tags that have not been pulled):', version('${PACKAGE_NAME}'))"
 
-stages:
-  - build
-  - test
-  - deploy
-
-cache:
-  key: "$CI_JOB_NAME"
-  paths:
-    - .pip-cache/
-
-build_wheels:
-  stage: build
-  script:
-    - pip wheel -w wheels -r requirements.txt pip "setuptools>=61" "setuptools_scm[toml]>=6.2" wheel
-    - pip wheel -w wheels --no-index --find-links=wheels .
-    - pip wheel -w dev-wheels --find-links=wheels -r dev-requirements.txt
-  artifacts:
-    when: on_success
-    paths:
-      - wheels/
-      - dev-wheels/
+  after_script:
+    - eval "$(ssh-agent -k)" # to stop ssh-agent from running forever
 
 run_tests:
   stage: test
-  needs:
-    - build_wheels
+  needs: []
   script:
-    - pip install --no-index --no-deps wheels/*
-    - pip install --no-index --no-deps dev-wheels/*
-    - pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=85 --junitxml=junit_coverage.xml pysnapping
+    - uv run pytest -s -vvv --log-cli-level INFO --cov=pysnapping --cov-report term --cov-report xml:cobertura_coverage.xml --cov-fail-under=85 --junitxml=junit_coverage.xml pysnapping
   coverage: '/^TOTAL.+?(\d+\%)$/'
   artifacts:
     reports:
@@ -57,10 +60,12 @@ run_tests:
 
 run_pre_commit_checks:
   stage: test
-  needs:
-    - build_wheels
+  needs: []
   script:
-    - pip install --no-index --no-deps dev-wheels/*
-    - pre-commit run -c .pre-commit-config.yaml --all-files
+    # We have to uv run here since we still have a system mypy hook that needs installed
+    # dependencies. Could be fixed by using ty and calling it without installing
+    # anything since ty can handle dependencies on its own (mypy and pyright can't do
+    # that).
+    - uv run pre-commit run --all-files
   except:
     - master

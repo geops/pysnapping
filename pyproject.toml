@@ -34,6 +34,14 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pre-commit",
+    "mypy",
+]
+
 [project.urls]
 homepage = "https://github.com/geops/pysnapping"
 geOps = "https://geops.com/en"
@@ -46,6 +54,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["pysnapping", "pysnapping.*"]
+
+[tool.uv]
+cache-keys = [
+    # default
+    { file = "pyproject.toml"},
+    # for non-editable installs (dynamic setuptools_scm versioning)
+    { git = { commit = true } },
+]
+environments = ["sys_platform == 'linux'"]
 
 [tool.ruff.lint]
 select = [
@@ -61,6 +78,9 @@ select = [
     "SLOT",   # str, tuple, namedtuple subclasses need __slots__
     "FIX003",  # line contains XXX
     "NPY201",  # numpy 2.0 deprecations
+    "SIM",  # flake8-simplify
+    "I",  # sort imports
+    "T100",  # breakpoints
 ]
 ignore = [
     "E501",  # line too long
@@ -71,8 +91,13 @@ max-complexity = 12
 
 [tool.mypy]
 ignore_missing_imports = true
-install_types = true
-non_interactive = true
+# If we allow to install types, mypy will use pip to alter the venv with unpinned extra
+# type stubs. We are on a pure uv setup and don't have pip. Also we want everything
+# pinned. Thus all missing type stubs have to go to dev dependencies.
+install_types = false
+non_interactive = false
+
+[tool.pytest]
 
 [tool.coverage.run]
 branch = true

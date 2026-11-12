@@ -1,39 +1,38 @@
-import typing
-from functools import partial
-from bisect import bisect_right
-from operator import itemgetter
 import logging
+import typing
+from bisect import bisect_right
+from functools import partial
+from operator import itemgetter
 
-import pyproj
 import numpy as np
+import pyproj
 from numpy.typing import ArrayLike
 
-from .linear_referencing import (
-    Locations,
-    substrings,
-    locate,
-    interpolate,
-    ProjectionTarget,
-    ProjectedPoints,
-    LineFractions,
-    resample,
-)
-from .util import (
-    get_trafo,
-    transform_coords,
-    array_chk,
-    simplify_2d_keep_rest,
-    cumulative_min_and_argmin,
-)
 from . import (
-    SnappingError,
-    BadShortestDistances,
-    ExtrapolationError,
     EPSG4326,
     EPSG4978,
+    BadShortestDistances,
+    ExtrapolationError,
+    SnappingError,
     SnappingMethod,
 )
-
+from .linear_referencing import (
+    LineFractions,
+    Locations,
+    ProjectedPoints,
+    ProjectionTarget,
+    interpolate,
+    locate,
+    resample,
+    substrings,
+)
+from .util import (
+    array_chk,
+    cumulative_min_and_argmin,
+    get_trafo,
+    simplify_2d_keep_rest,
+    transform_coords,
+)
 
 logger = logging.getLogger(__name__)
 
